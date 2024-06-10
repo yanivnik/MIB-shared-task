@@ -9,7 +9,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 import numpy as np
 import pygraphviz as pgv
 
-from .visualization import EDGE_TYPE_COLORS, generate_random_color
+from visualization import EDGE_TYPE_COLORS, generate_random_color
 
 class Node:
     """
@@ -57,9 +57,13 @@ class LogitNode(Node):
         super().__init__(name, n_layers - 1, f"blocks.{n_layers - 1}.hook_resid_post", '', index)
         
 class MLPNode(Node):
-    def __init__(self, layer: int):
-        name = f'm{layer}' 
-        index = slice(None) 
+    def __init__(self, layer: int, neuron: int = None):
+        if neuron is not None:
+            name = f'm{layer}.{neuron}' 
+            index = (slice(None), slice(None), neuron)
+        else:
+            name = f'm{layer}'
+            index = slice(None)
         super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index)
 
 class AttentionNode(Node):
@@ -255,10 +259,12 @@ class Graph:
         graph = Graph()
         if isinstance(model_or_config, HookedTransformer):
             cfg = model_or_config.cfg
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
+            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp,
+                         'd_model': cfg.d_model}
         elif isinstance(model_or_config, HookedTransformerConfig):
             cfg = model_or_config
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
+            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp,
+                         'd_model': cfg.d_model}
         else:
             graph.cfg = model_or_config
         
@@ -268,21 +274,26 @@ class Graph:
 
         for layer in range(graph.cfg['n_layers']):
             attn_nodes = [AttentionNode(layer, head) for head in range(graph.cfg['n_heads'])]
-            mlp_node = MLPNode(layer)
+            mlp_nodes = [MLPNode(layer, idx) for idx in range(graph.cfg['d_model'])]
+            mlp_layer_node = MLPNode(layer)
             
             for attn_node in attn_nodes: 
-                graph.nodes[attn_node.name] = attn_node 
-            graph.nodes[mlp_node.name] = mlp_node     
+                graph.nodes[attn_node.name] = attn_node
+            for mlp_node in mlp_nodes:
+                graph.nodes[mlp_node.name] = mlp_node     
                                     
             if graph.cfg['parallel_attn_mlp']:
                 for node in residual_stream:
                     for attn_node in attn_nodes:          
                         for letter in 'qkv':           
                             graph.add_edge(node, attn_node, qkv=letter)
-                    graph.add_edge(node, mlp_node)
+                    # for mlp_node in mlp_nodes:
+                    #     graph.add_edge(node, mlp_node)
+                    graph.add_edge(node, mlp_layer_node)
                 
                 residual_stream += attn_nodes
-                residual_stream.append(mlp_node)
+                residual_stream.append(mlp_layer_node)
+                # residual_stream.append(mlp_node)
 
             else:
                 for node in residual_stream:
@@ -292,8 +303,10 @@ class Graph:
                 residual_stream += attn_nodes
 
                 for node in residual_stream:
-                    graph.add_edge(node, mlp_node)
-                residual_stream.append(mlp_node)
+                    # for mlp_node in mlp_nodes:
+                    #   graph.add_edge(node, mlp_node)
+                    graph.add_edge(node, mlp_layer_node)
+                residual_stream.append(mlp_layer_node)
                         
         logit_node = LogitNode(graph.cfg['n_layers'])
         for node in residual_stream:
@@ -319,9 +332,28 @@ class Graph:
             d = json.load(f)
         g = Graph.from_model(d['cfg'])
         for name, in_graph in d['nodes'].items():
-            g.nodes[name].in_graph = in_graph
+            if name.startswith("m") and "." not in name:    # include all neurons
+                for neuron in range(d['cfg']['d_model']):
+                    g.nodes[f'{name}.{neuron}'].in_graph = in_graph
+            else:
+                g.nodes[name].in_graph = in_graph
         
         for name, info in d['edges'].items():
+            # us, ds = name.split("->")
+            # if us.startswith("m") and "." not in us and ds.startswith("m") and "." not in ds:
+            #     for neuron_us in range(d['cfg']['d_model']):
+            #         for neuron_ds in range(d['cfg']['d_model']):
+            #             g.edges[f'{us}.{neuron_us}->{ds}.{neuron_ds}'].score = info['score']
+            #             g.edges[f'{us}.{neuron_us}->{ds}.{neuron_ds}'].in_graph = info['in_graph']
+            # elif us.startswith("m") and "." not in us:
+            #     for neuron in range(d['cfg']['d_model']):
+            #         g.edges[f'{us}.{neuron}->{ds}'].score = info['score']
+            #         g.edges[f'{us}.{neuron}->{ds}'].in_graph = info['in_graph']
+            # elif ds.startswith("m") and "." not in ds:
+            #     for neuron in range(d['cfg']['d_model']):
+            #         g.edges[f'{us}->{ds}.{neuron}'].score = info['score']
+            #         g.edges[f'{us}->{ds}.{neuron}'].in_graph = info['in_graph']
+            # else:
             g.edges[name].score = info['score']
             g.edges[name].in_graph = info['in_graph']
 
