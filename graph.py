@@ -335,67 +335,6 @@ class Graph:
         with open(filename, 'w') as f:
             json.dump(d, f)
 
-    @classmethod
-    def from_json(cls, filename):
-        with open(filename, 'r') as f:
-            d = json.load(f)
-        g = Graph.from_model(d['cfg'])
-        for name in d['nodes']:
-            if type(d['nodes'][name]) == dict:
-                in_graph = d['nodes'][name]["in_graph"]
-                score = d['nodes'][name]["score"]
-            else:
-                in_graph = d['nodes'][name]
-                score = None
-            if name.startswith("m") and "." not in name:    # include all neurons
-                if "d_model" in d["cfg"]:
-                    for neuron in range(d['cfg']['d_model']):
-                        g.nodes[f'{name}.{neuron}'].in_graph = in_graph
-                        if score is not None:
-                            g.nodes[f'{name}.{neuron}'].score = score
-                else:
-                    g.nodes[name].in_graph = in_graph
-                    if score is not None:
-                        g.nodes[name].score = score
-            else:
-                g.nodes[name].in_graph = in_graph
-                g.nodes[name].score = score
-        
-        for name, info in d['edges'].items():
-            # Leaving this out because including all pairwise neuron edges makes the graph huge
-            # us, ds = name.split("->")
-            # if us.startswith("m") and "." not in us and ds.startswith("m") and "." not in ds:
-            #     for neuron_us in range(d['cfg']['d_model']):
-            #         for neuron_ds in range(d['cfg']['d_model']):
-            #             g.edges[f'{us}.{neuron_us}->{ds}.{neuron_ds}'].score = info['score']
-            #             g.edges[f'{us}.{neuron_us}->{ds}.{neuron_ds}'].in_graph = info['in_graph']
-            # elif us.startswith("m") and "." not in us:
-            #     for neuron in range(d['cfg']['d_model']):
-            #         g.edges[f'{us}.{neuron}->{ds}'].score = info['score']
-            #         g.edges[f'{us}.{neuron}->{ds}'].in_graph = info['in_graph']
-            # elif ds.startswith("m") and "." not in ds:
-            #     for neuron in range(d['cfg']['d_model']):
-            #         g.edges[f'{us}->{ds}.{neuron}'].score = info['score']
-            #         g.edges[f'{us}->{ds}.{neuron}'].in_graph = info['in_graph']
-            # else:
-            g.edges[name].score = info['score']
-            g.edges[name].in_graph = info['in_graph']
-
-        return g
-    
-    def __eq__(self, other):
-        keys_equal = (set(self.nodes.keys()) == set(other.nodes.keys())) and (set(self.edges.keys()) == set(other.edges.keys()))
-        if not keys_equal:
-            return False
-        
-        for name, node in self.nodes.items():
-            if node.in_graph != other.nodes[name].in_graph:
-                return False 
-            
-        for name, edge in self.edges.items():
-            if (edge.in_graph != other.edges[name].in_graph) or not np.allclose(edge.score, other.edges[name].score):
-                return False
-        return True
 
     def to_graphviz(
         self,
@@ -439,3 +378,17 @@ class Graph:
                         color=edge.get_color(),
                         )
         return g
+
+    def __eq__(self, other):
+        keys_equal = (set(self.nodes.keys()) == set(other.nodes.keys())) and (set(self.edges.keys()) == set(other.edges.keys()))
+        if not keys_equal:
+            return False
+        
+        for name, node in self.nodes.items():
+            if node.in_graph != other.nodes[name].in_graph:
+                return False 
+            
+        for name, edge in self.edges.items():
+            if (edge.in_graph != other.edges[name].in_graph) or not np.allclose(edge.score, other.edges[name].score):
+                return False
+        return True
