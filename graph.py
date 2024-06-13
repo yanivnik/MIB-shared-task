@@ -26,9 +26,11 @@ class Node:
     children: Set['Node']
     child_edges: Set['Edge']
     in_graph: bool
+    score: Optional[float]
     qkv_inputs: Optional[List[str]]
 
-    def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple, qkv_inputs: Optional[List[str]]=None):
+    def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
+                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
@@ -39,6 +41,7 @@ class Node:
         self.children = set()
         self.parent_edges = set()
         self.child_edges = set()
+        self.score = score
         self.qkv_inputs = qkv_inputs
 
     def __eq__(self, other):
@@ -274,13 +277,19 @@ class Graph:
 
         for layer in range(graph.cfg['n_layers']):
             attn_nodes = [AttentionNode(layer, head) for head in range(graph.cfg['n_heads'])]
-            mlp_nodes = [MLPNode(layer, idx) for idx in range(graph.cfg['d_model'])]
+            if "d_model" in graph.cfg:
+                mlp_nodes = [MLPNode(layer, idx) for idx in range(graph.cfg['d_model'])]
+            else:
+                mlp_nodes = []
             mlp_layer_node = MLPNode(layer)
             
             for attn_node in attn_nodes: 
                 graph.nodes[attn_node.name] = attn_node
-            for mlp_node in mlp_nodes:
-                graph.nodes[mlp_node.name] = mlp_node     
+            if len(mlp_nodes) > 0:
+                for mlp_node in mlp_nodes:
+                    graph.nodes[mlp_node.name] = mlp_node 
+            else:
+                graph.nodes[mlp_layer_node.name] = mlp_layer_node
                                     
             if graph.cfg['parallel_attn_mlp']:
                 for node in residual_stream:
@@ -331,14 +340,29 @@ class Graph:
         with open(filename, 'r') as f:
             d = json.load(f)
         g = Graph.from_model(d['cfg'])
-        for name, in_graph in d['nodes'].items():
+        for name in d['nodes']:
+            if type(d['nodes'][name]) == dict:
+                in_graph = d['nodes'][name]["in_graph"]
+                score = d['nodes'][name]["score"]
+            else:
+                in_graph = d['nodes'][name]
+                score = None
             if name.startswith("m") and "." not in name:    # include all neurons
-                for neuron in range(d['cfg']['d_model']):
-                    g.nodes[f'{name}.{neuron}'].in_graph = in_graph
+                if "d_model" in d["cfg"]:
+                    for neuron in range(d['cfg']['d_model']):
+                        g.nodes[f'{name}.{neuron}'].in_graph = in_graph
+                        if score is not None:
+                            g.nodes[f'{name}.{neuron}'].score = score
+                else:
+                    g.nodes[name].in_graph = in_graph
+                    if score is not None:
+                        g.nodes[name].score = score
             else:
                 g.nodes[name].in_graph = in_graph
+                g.nodes[name].score = score
         
         for name, info in d['edges'].items():
+            # Leaving this out because including all pairwise neuron edges makes the graph huge
             # us, ds = name.split("->")
             # if us.startswith("m") and "." not in us and ds.startswith("m") and "." not in ds:
             #     for neuron_us in range(d['cfg']['d_model']):

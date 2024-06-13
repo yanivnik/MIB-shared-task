@@ -6,10 +6,12 @@ from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import rearrange, einsum
+from copy import deepcopy
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False):
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False,
+                   node_eval=False, edge_eval=True):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
@@ -51,21 +53,25 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
     input_construction_hooks = []
     node_hooks = []
-    for node in nodes_in_graph:
-        if isinstance(node, InputNode):
-            pass
-        elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
-            input_construction_hooks.append((node.in_hook, make_input_construction_hook(node)))
-        elif isinstance(node, AttentionNode):
-            for i, letter in enumerate('qkv'):
-                input_construction_hooks.append((node.qkv_inputs[i], make_input_construction_hook(node, qkv=letter)))
-        else:
-            raise ValueError(f"Invalid node: {node} of type {type(node)}")
-    for node in nodes_not_in_graph:
-        if isinstance(node, InputNode):
-            pass
-        elif isinstance(node, MLPNode):
-            node_hooks.append((node.out_hook, make_node_hook(node)))
+    if edge_eval:
+        for node in nodes_in_graph:
+            if isinstance(node, InputNode):
+                pass
+            elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
+                input_construction_hooks.append((node.in_hook, make_input_construction_hook(node)))
+            elif isinstance(node, AttentionNode):
+                for i, letter in enumerate('qkv'):
+                    if node.qkv_inputs is None:
+                        continue
+                    input_construction_hooks.append((node.qkv_inputs[i], make_input_construction_hook(node, qkv=letter)))
+            else:
+                raise ValueError(f"Invalid node: {node} of type {type(node)}")
+    if node_eval:
+        for node in nodes_not_in_graph:
+            if isinstance(node, InputNode):
+                pass
+            elif isinstance(node, MLPNode):
+                node_hooks.append((node.out_hook, make_node_hook(node)))
         # elif isinstance(node, AttentionNode):
         #     for i, letter in enumerate('qkv'):
         #         node_hooks.append((node.qkv_inputs[i], make_node_hook(node, qkv=letter)))
@@ -103,6 +109,57 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     if not metrics_list:
         results = results[0]
     return results
+
+
+def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
+                              node_eval=True, run_corrupted=False):
+    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
+    
+    if node_eval:
+        filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
+        sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
+        num_nodes = len(sorted_itemlist)
+    else:
+        filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
+        sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
+        num_edges = len(sorted_itemlist)
+    order = 10
+    percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
+    # percentages = (.001, .002, .005)
+    faithfulnesses = []
+    for pct in percentages:
+        this_graph = graph
+        if node_eval:
+            curr_num_items = int(pct * num_nodes)
+            print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
+            for idx, node in enumerate(sorted_itemlist):
+                if idx < curr_num_items:
+                    this_graph.nodes[node[0]].in_graph = True
+                else:
+                    this_graph.nodes[node[0]].in_graph = False
+        else:
+            curr_num_items = int(pct * num_edges)
+            print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
+            for idx, edge in enumerate(sorted_itemlist):
+                if idx < curr_num_items:
+                    this_graph.edges[edge[0]].in_graph = True
+                else:
+                    this_graph.edges[edge[0]].in_graph = False
+        edge_eval = not node_eval
+        ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
+                                       prune=prune, quiet=quiet, node_eval=node_eval,
+                                       edge_eval=edge_eval).mean().item()
+        faithfulness = ablated_score / baseline_score
+        faithfulnesses.append(faithfulness)
+    
+    area = 0.
+    for i in range(len(faithfulnesses) - 1):
+        i_1, i_2 = i, i+1
+        trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
+        area += trapezoidal
+    average = sum(faithfulnesses) / len(faithfulnesses)
+    return area, average
+
 
 def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: List[Callable[[Tensor], Tensor]], run_corrupted=False):
     metrics_list = True
