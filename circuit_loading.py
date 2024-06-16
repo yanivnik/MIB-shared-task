@@ -10,7 +10,8 @@ def load_graph_from_json(json_path: str):
     The JSON should have the following keys:
         1. 'cfg': Configuration dictionary, containing similar values to a TLens configuration object.
         2. 'nodes': Dict[str, bool] which maps a node name (i.e. 'm11' or 'a0.h11') to a boolean value, indicating if the node is part of the circuit.
-        3. 'edges': Dict[str, Dict] which maps an edge name ('node->node') to a dictionary containins values 
+        3. 'edges': Dict[str, Dict] which maps an edge name ('node->node') to a dictionary contains values 
+        4. 'neurons': Optional[Dict[str, List[bool]]] which maps a node name (i.e. 'm11' or 'a0.h11') to a list of boolean values, indicating which of its neurons are part of the circuit.
 
     NOTE: This method isn't disk-space efficient, and shouldn't be used when the circuits contains edges between neuron-resolution nodes.
     """
@@ -20,16 +21,15 @@ def load_graph_from_json(json_path: str):
 
     g = Graph.from_model(d['cfg'])
     for name, in_graph in d['nodes'].items():
-        if name.startswith("m") and "." not in name:
-            # MLP Node without specific neurons found - include all neurons
-            for neuron in range(d['cfg']['d_model']):
-                g.nodes[f'{name}.{neuron}'].in_graph = in_graph
-        else:
-            g.nodes[name].in_graph = in_graph
+        g.nodes[name].in_graph = in_graph
     
     for name, info in d['edges'].items():
         g.edges[name].score = info['score']
         g.edges[name].in_graph = info['in_graph']
+        
+    if 'neurons' in d.keys():
+        for name, neurons in d['neurons'].items():
+            g.nodes[name].neurons = torch.tensor(neurons).float()
 
     return g
 
@@ -43,20 +43,17 @@ def load_graph_from_pt(pt_path):
         2. 'src_nodes': Dict[str, bool] which maps a node name (i.e. 'm11' or 'a0.h11') to a boolean value, indicating if the node is part of the circuit.
         3. 'dst_nodes': List[str] containing the names of the possible destination nodes, in the same order as the edges tensor.
         4. 'edges': torch.tensor[n_src_nodes, n_dst_nodes], where each value in (src, dst) represents the edge score between the src node and dst node.
+        5. 'edges_in_graph': torch.tensor[n_src_nodes, n_dst_nodes], where each value in (src, dst) represents if the edge is in the graph or not.
+        6. 'neurons': [Optional] torch.tensor[n_src_nodes, d_model], where each value in (src, neuron) indicates whether the neuron is in the graph or not
     """
     d = torch.load(pt_path)
-    assert all([k in d.keys() for k in ['cfg', 'src_nodes', 'dst_nodes', 'edges']]), "Bad torch circuit file format - Missing keys"
-    assert d['edges'].shape == (len(d['src_nodes']), len(d['dst_nodes'])), "Bad edges array shape"
+    assert all([k in d.keys() for k in ['cfg', 'src_nodes', 'dst_nodes', 'edges', 'edges_in_graph']]), f"Bad torch circuit file format. Found keys - {d.keys()}, missing keys - {set(['cfg', 'src_nodes', 'dst_nodes', 'edges', 'edges_in_graph']) - set(d.keys())}"
+    assert d['edges'].shape == d['edges_in_graph'].shape == (len(d['src_nodes']), len(d['dst_nodes'])), "Bad edges array shape"
 
     g = Graph.from_model(d['cfg'])
 
     for name, in_graph in d['src_nodes'].items():
-        if name.startswith("m") and "." not in name:
-            # MLP Node without specific neurons found - include all neurons
-            for neuron in range(d['cfg']['d_model']):
-                g.nodes[f'{name}.{neuron}'].in_graph = in_graph
-        else:
-            g.nodes[name].in_graph = in_graph
+        g.nodes[name].in_graph = in_graph
 
     # Enumerate over the tensor and fill the edge values in the graph
     for src_idx, src_name in enumerate(d['src_nodes']):
@@ -64,7 +61,7 @@ def load_graph_from_pt(pt_path):
             edge_name = f'{src_name}->{dst_name}'
             if edge_name in g.edges.keys():
                 g.edges[edge_name].score = d['edges'][src_idx, dst_idx]
-                g.edges[edge_name].in_graph = (d['edges'][src_idx, dst_idx] != -torch.inf)
+                g.edges[edge_name].in_graph = d['edges_in_graph'][src_idx, dst_idx]
 
     return g
 

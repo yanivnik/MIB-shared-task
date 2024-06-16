@@ -7,10 +7,11 @@ from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import rearrange, einsum
 from copy import deepcopy
+from attribute import get_npos_input_lengths, make_hooks_and_matrices
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False,
+def evaluate_graph_old(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False,
                    node_eval=False, edge_eval=True):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
@@ -110,9 +111,108 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         results = results[0]
     return results
 
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False):
+    """
+    Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
+    """
+    if prune:
+        graph.prune_dead_nodes()
+
+    empty_circuit = not graph.nodes['logits'].in_graph
+
+    in_graph_matrix = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)
+    for edge in graph.edges.values():
+        if edge.in_graph:
+            in_graph_matrix[graph.forward_index(edge.parent, attn_slice=False), graph.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = 1
+            
+    in_graph_matrix = 1 - in_graph_matrix
+    
+    if neuron_level:
+        neuron_matrix = torch.ones((graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+        for node in graph.nodes.values():
+            if node.neurons is not None:
+                neuron_matrix[graph.forward_index(edge.parent, attn_slice=False)] = node.neurons
+                
+        neuron_matrix = 1 - neuron_matrix
+    else:
+        neuron_matrix = None
+
+    # For each node in the graph, construct its input (in the case of attention heads, multiple inputs) by corrupting the incoming edges that are not in the circuit.
+    # We assume that the corrupted cache is filled with corresponding corrupted activations, and that the mixed cache contains the computed activations from preceding nodes in this forward pass.
+    def make_input_construction_hook(act_index, activation_differences, in_graph_vector, neuron_matrix):
+        def input_construction_hook(activations, hook):
+            if neuron_matrix is not None:
+                update = einsum(activation_differences[:, :, :len(in_graph_vector)], neuron_matrix[:len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous hidden, previous -> batch pos hidden')
+            else:
+                update = einsum(activation_differences[:, :, :len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous -> batch pos hidden')
+            activations[act_index] += update
+            return activations
+        return input_construction_hook
+
+    def make_input_construction_hooks(activation_differences, in_graph_matrix, neuron_matrix):
+        input_construction_hooks = []
+        for node in graph.nodes.values():
+            if isinstance(node, InputNode):
+                pass
+            elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
+                fwd_index = graph.prev_index(node)
+                bwd_index = graph.backward_index(node)
+                input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
+                input_construction_hooks.append((node.in_hook, input_cons_hook))
+            elif isinstance(node, AttentionNode):
+                for i, letter in enumerate('qkv'):
+                    fwd_index = graph.prev_index(node)
+                    bwd_index = graph.backward_index(node, qkv=letter, attn_slice=False)
+                    input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
+                    input_construction_hooks.append((node.qkv_inputs[i], input_cons_hook))
+            else:
+                raise ValueError(f"Invalid node: {node} of type {type(node)}")
+        return input_construction_hooks
+    
+    # and here we actually run / evaluate the model
+    metrics_list = True
+    if not isinstance(metrics, list):
+        metrics = [metrics]
+        metrics_list = False
+    results = [[] for _ in metrics]
+    
+    dataloader = dataloader if quiet else tqdm(dataloader)
+    for clean, corrupted, label in dataloader:
+        n_pos, input_lengths = get_npos_input_lengths(model, clean)        
+
+        (fwd_hooks_corrupted, fwd_hooks_clean, _), activation_difference = make_hooks_and_matrices(model, graph, len(clean), n_pos, None)
+        
+        input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
+        with torch.inference_mode():
+            
+            if not zero_ablate:
+                # We intervene by subtracting out clean and adding in corrupted activations
+                # In the case of zero ablation, we skip the adding in corrupted activations
+                with model.hooks(fwd_hooks_corrupted):
+                    corrupted_logits = model(corrupted)
+                
+            with model.hooks(fwd_hooks_clean + input_construction_hooks):
+                if empty_circuit:
+                    # if the circuit is totally empty, so is nodes_in_graph
+                    # so we just corrupt everything manually like this
+                    logits = model(corrupted)
+                else:
+                    logits = model(clean)
+
+        for i, metric in enumerate(metrics):
+            r = metric(logits, corrupted_logits, input_lengths, label).cpu()
+            if len(r.size()) == 0:
+                r = r.unsqueeze(0)
+            results[i].append(r)
+
+    results = [torch.cat(rs) for rs in results]
+    if not metrics_list:
+        results = results[0]
+    return results
+
 
 def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, run_corrupted=False):
+                              node_eval=False, zero_ablate=False, run_corrupted=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
@@ -145,10 +245,8 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
                     this_graph.edges[edge[0]].in_graph = True
                 else:
                     this_graph.edges[edge[0]].in_graph = False
-        edge_eval = not node_eval
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, node_eval=node_eval,
-                                       edge_eval=edge_eval).mean().item()
+                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate).mean().item()
         faithfulness = ablated_score / baseline_score
         faithfulnesses.append(faithfulness)
     
