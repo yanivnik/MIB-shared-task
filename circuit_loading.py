@@ -64,30 +64,3 @@ def load_graph_from_pt(pt_path):
                 g.edges[edge_name].in_graph = d['edges_in_graph'][src_idx, dst_idx]
 
     return g
-
-
-def _json_to_pt(json_path, output_pt_path=None):
-    """
-    Utility function to convert a JSON file formatted for load_graph_from_json to a Pytorch file formatted for load_graph_from_pt.
-
-    Args:
-        json_path (str): Path to the input JSON file.
-        output_pt_path (str, optional): Path to the output PT file. If None, will be saved in the same directory as the input JSON file.
-    """
-    g = load_graph_from_json(json_path)
-    src_nodes = {name: node.in_graph for name, node in g.nodes.items()}
-    dst_nodes = set([e.split('->')[1] for e in g.edges.keys()])
-    edges = torch.full((len(src_nodes), len(dst_nodes)), -torch.inf)
-    
-    for src_idx, src_name in enumerate(src_nodes):
-        for dst_idx, dst_name in enumerate(dst_nodes): # TODO MAKE MORE EFFICIENT - ONLY SCAN WHEN src < dst in ORDER                
-            edge_name = f'{src_name}->{dst_name}'
-            if edge_name in g.edges:
-                edges[src_idx, dst_idx] = g.edges[edge_name].score if g.edges[edge_name].in_graph else -torch.inf
-
-    torch.save({
-        'cfg': g.cfg,
-        'src_nodes': src_nodes,
-        'dst_nodes': dst_nodes,
-        'edges': edges
-    }, (output_pt_path or json_path.replace('.json', '.pt')))

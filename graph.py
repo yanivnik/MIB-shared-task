@@ -155,7 +155,7 @@ class Graph:
             Union[int, slice]: an index representing the prev forward index of the node
         """
         if isinstance(node, InputNode):
-            raise ValueError(f"No prev forward for input node")
+            return 0
         elif isinstance(node, LogitNode):
             return self.n_forward
             # raise ValueError(f"No forward for logits node")
@@ -198,7 +198,7 @@ class Graph:
         else:
             raise ValueError(f"Invalid node: {node} of type {type(node)}")
         
-    def backward_heads(self):
+    def get_dst_nodes(self):
         heads = []
         for layer in range(self.cfg['n_layers']):
             for letter in 'qkv':
@@ -369,7 +369,7 @@ class Graph:
             
     def to_pt(self, filename: str, neurons: bool = False):
         src_nodes = {node.name: node.in_graph for node in self.nodes.values() if not isinstance(node, LogitNode)}
-        dst_nodes = self.backward_heads()
+        dst_nodes = self.get_dst_nodes()
         edge_scores, edges_in_graph = self.edge_matrices()
         d = {'cfg':self.cfg, 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges': edge_scores, 'edges_in_graph': edges_in_graph}
         if neurons:
