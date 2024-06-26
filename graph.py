@@ -30,7 +30,7 @@ class Node:
     qkv_inputs: Optional[List[str]]
 
     def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
-                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None):
+                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
@@ -43,6 +43,7 @@ class Node:
         self.child_edges = set()
         self.score = score
         self.qkv_inputs = qkv_inputs
+        self.neurons = neurons
 
     def __eq__(self, other):
         return self.name == other.name
@@ -60,44 +61,41 @@ class LogitNode(Node):
         super().__init__(name, n_layers - 1, f"blocks.{n_layers - 1}.hook_resid_post", '', index)
         
 class MLPNode(Node):
-    def __init__(self, layer: int, neuron: int = None):
-        if neuron is not None:
-            name = f'm{layer}.{neuron}' 
-            index = (slice(None), slice(None), neuron)
-        else:
-            name = f'm{layer}'
-            index = slice(None)
-        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index)
+    def __init__(self, layer: int, neurons: Optional[torch.Tensor] = None):
+        name = f'm{layer}'
+        index = slice(None)
+        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index, neurons=neurons)
 
 class AttentionNode(Node):
     head: int
-    def __init__(self, layer:int, head:int):
+    def __init__(self, layer:int, head:int, neurons: Optional[torch.Tensor] = None):
         name = f'a{layer}.h{head}' 
         self.head = head
         index = (slice(None), slice(None), head) 
-        super().__init__(name, layer, f'blocks.{layer}.hook_attn_in', f"blocks.{layer}.attn.hook_result", index, [f'blocks.{layer}.hook_{letter}_input' for letter in 'qkv'])
+        super().__init__(name, layer, f'blocks.{layer}.hook_attn_in', f"blocks.{layer}.attn.hook_result", index, qkv_inputs=[f'blocks.{layer}.hook_{letter}_input' for letter in 'qkv'], neurons=neurons)
 
 class InputNode(Node):
-    def __init__(self):
+    def __init__(self, neurons: Optional[torch.Tensor] = None):
         name = 'input' 
         index = slice(None) 
-        super().__init__(name, 0, '', "hook_embed", index)  #"blocks.0.hook_resid_pre", index)
+        super().__init__(name, 0, '', "hook_embed", index, neurons=neurons)  #"blocks.0.hook_resid_pre", index)
 
 class Edge:
+    graph: 'Graph'
     name: str
     parent: Node 
     child: Node 
     hook: str
     index: Tuple
-    score : Optional[float]
-    in_graph: bool
-    def __init__(self, parent: Node, child: Node, qkv:Union[None, Literal['q'], Literal['k'], Literal['v']]=None):
+    def __init__(self, graph: 'Graph', parent: Node, child: Node, qkv:Union[None, Literal['q'], Literal['k'], Literal['v']]=None):
+        self.graph = graph
         self.name = f'{parent.name}->{child.name}' if qkv is None else f'{parent.name}->{child.name}<{qkv}>'
         self.parent = parent 
         self.child = child
         self.qkv = qkv
-        self.score = None
+        self.score = 0
         self.in_graph = True
+        
         if isinstance(child, AttentionNode):
             if qkv is None:
                 raise ValueError(f'Edge({self.name}): Edges to attention heads must have a non-none value for qkv.')
@@ -106,6 +104,8 @@ class Edge:
         else:
             self.index = child.index
             self.hook = child.in_hook
+            
+            
     def get_color(self):
         if self.qkv is not None:
             return EDGE_TYPE_COLORS[self.qkv]
@@ -137,12 +137,38 @@ class Graph:
         self.n_backward = 0
 
     def add_edge(self, parent:Node, child:Node, qkv:Union[None, Literal['q'], Literal['k'], Literal['v']]=None):
-        edge = Edge(parent, child, qkv)
+        edge = Edge(self, parent, child, qkv)
         self.edges[edge.name] = edge
         parent.children.add(child)
         parent.child_edges.add(edge)
         child.parents.add(parent)
         child.parent_edges.add(edge)
+        
+        
+    def prev_index(self, node: Node) -> Union[int, slice]:
+        """Return the forward index before which all nodes contribute to the input of the given node
+
+        Args:
+            node (Node): The node to get the prev forward index of
+
+        Returns:
+            Union[int, slice]: an index representing the prev forward index of the node
+        """
+        if isinstance(node, InputNode):
+            return 0
+        elif isinstance(node, LogitNode):
+            return self.n_forward
+            # raise ValueError(f"No forward for logits node")
+        elif isinstance(node, MLPNode):
+            if self.cfg['parallel_attn_mlp']:
+                return 1 + node.layer * (self.cfg['n_heads'] + 1)
+            else:
+                return 1 + node.layer * (self.cfg['n_heads'] + 1) + self.cfg['n_heads']
+        elif isinstance(node, AttentionNode):
+            i =  1 + node.layer * (self.cfg['n_heads'] + 1)
+            return i
+        else:
+            raise ValueError(f"Invalid node: {node} of type {type(node)}")
 
     def forward_index(self, node:Node, attn_slice=True):
         if isinstance(node, InputNode):
@@ -156,8 +182,7 @@ class Graph:
             i =  1 + node.layer * (self.cfg['n_heads'] + 1)
             return slice(i, i + self.cfg['n_heads']) if attn_slice else i + node.head
         else:
-            raise ValueError(f"Invalid node: {node} of type {type(node)}")
-        
+            raise ValueError(f"Invalid node: {node} of type {type(node)}")        
 
     def backward_index(self, node:Node, qkv=None, attn_slice=True):
         if isinstance(node, InputNode):
@@ -172,6 +197,16 @@ class Graph:
             return slice(i, i + self.cfg['n_heads']) if attn_slice else i + node.head
         else:
             raise ValueError(f"Invalid node: {node} of type {type(node)}")
+        
+    def get_dst_nodes(self):
+        heads = []
+        for layer in range(self.cfg['n_layers']):
+            for letter in 'qkv':
+                for attention_head in range(self.cfg['n_heads']):
+                    heads.append(f'a{layer}.h{attention_head}<{letter}>')
+            heads.append(f'm{layer}')
+        heads.append('logits')
+        return heads
 
     def scores(self, nonzero=False, in_graph=False, sort=True):
         s = torch.tensor([edge.score for edge in self.edges.values() if edge.score != 0 and (edge.in_graph or not in_graph)]) if nonzero else torch.tensor([edge.score for edge in self.edges.values()])
@@ -192,11 +227,12 @@ class Graph:
             edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
     
     def apply_topn(self, n:int, absolute: bool):
-        a = abs if absolute else lambda x: x
+        def abs_id(s: float):
+            return abs(s) if absolute else s
         for node in self.nodes.values():
             node.in_graph = False
 
-        sorted_edges = sorted(list(self.edges.values()), key = lambda edge: a(edge.score), reverse=True)
+        sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
         for edge in sorted_edges[:n]:
             edge.in_graph = True 
             edge.parent.in_graph = True 
@@ -258,51 +294,39 @@ class Graph:
 
 
     @classmethod
-    def from_model(cls, model_or_config: Union[HookedTransformer,HookedTransformerConfig, Dict]):
+    def from_model(cls, model_or_config: Union[HookedTransformer,HookedTransformerConfig, Dict], neuron_level: bool = False):
         graph = Graph()
         if isinstance(model_or_config, HookedTransformer):
             cfg = model_or_config.cfg
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp,
-                         'd_model': cfg.d_model}
+            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
         elif isinstance(model_or_config, HookedTransformerConfig):
             cfg = model_or_config
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp,
-                         'd_model': cfg.d_model}
+            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
         else:
             graph.cfg = model_or_config
-        
-        input_node = InputNode()
+            
+        neurons = torch.zeros(graph.cfg['d_model']) if neuron_level else None
+        input_node = InputNode(neurons)
         graph.nodes[input_node.name] = input_node
         residual_stream = [input_node]
 
         for layer in range(graph.cfg['n_layers']):
-            attn_nodes = [AttentionNode(layer, head) for head in range(graph.cfg['n_heads'])]
-            if "d_model" in graph.cfg:
-                mlp_nodes = [MLPNode(layer, idx) for idx in range(graph.cfg['d_model'])]
-            else:
-                mlp_nodes = []
-            mlp_layer_node = MLPNode(layer)
+            attn_nodes = [AttentionNode(layer, head, neurons) for head in range(graph.cfg['n_heads'])]
+            mlp_node = MLPNode(layer, neurons)
             
             for attn_node in attn_nodes: 
-                graph.nodes[attn_node.name] = attn_node
-            if len(mlp_nodes) > 0:
-                for mlp_node in mlp_nodes:
-                    graph.nodes[mlp_node.name] = mlp_node 
-            else:
-                graph.nodes[mlp_layer_node.name] = mlp_layer_node
+                graph.nodes[attn_node.name] = attn_node 
+            graph.nodes[mlp_node.name] = mlp_node     
                                     
             if graph.cfg['parallel_attn_mlp']:
                 for node in residual_stream:
                     for attn_node in attn_nodes:          
                         for letter in 'qkv':           
                             graph.add_edge(node, attn_node, qkv=letter)
-                    # for mlp_node in mlp_nodes:
-                    #     graph.add_edge(node, mlp_node)
-                    graph.add_edge(node, mlp_layer_node)
+                    graph.add_edge(node, mlp_node)
                 
                 residual_stream += attn_nodes
-                residual_stream.append(mlp_layer_node)
-                # residual_stream.append(mlp_node)
+                residual_stream.append(mlp_node)
 
             else:
                 for node in residual_stream:
@@ -312,10 +336,8 @@ class Graph:
                 residual_stream += attn_nodes
 
                 for node in residual_stream:
-                    # for mlp_node in mlp_nodes:
-                    #   graph.add_edge(node, mlp_node)
-                    graph.add_edge(node, mlp_layer_node)
-                residual_stream.append(mlp_layer_node)
+                    graph.add_edge(node, mlp_node)
+                residual_stream.append(mlp_node)
                         
         logit_node = LogitNode(graph.cfg['n_layers'])
         for node in residual_stream:
@@ -328,12 +350,32 @@ class Graph:
 
         return graph
 
+    def edge_matrices(self): 
+        edge_scores = torch.zeros((self.n_forward, self.n_backward))
+        edges_in_graph = torch.zeros((self.n_forward, self.n_backward)).bool()
+        for edge in self.edges.values():
+            edge_scores[self.forward_index(edge.parent, attn_slice=False), self.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = edge.score
+            edges_in_graph[self.forward_index(edge.parent, attn_slice=False), self.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = edge.in_graph
+            
+        return edge_scores, edges_in_graph
 
-    def to_json(self, filename):
+
+    def to_json(self, filename: str):
         # non serializable info
         d = {'cfg':self.cfg, 'nodes': {str(name): bool(node.in_graph) for name, node in self.nodes.items()}, 'edges':{str(name): {'score': None if edge.score is None else float(edge.score), 'in_graph': bool(edge.in_graph)} for name, edge in self.edges.items()}}
         with open(filename, 'w') as f:
             json.dump(d, f)
+            
+            
+    def to_pt(self, filename: str, neurons: bool = False):
+        src_nodes = {node.name: node.in_graph for node in self.nodes.values() if not isinstance(node, LogitNode)}
+        dst_nodes = self.get_dst_nodes()
+        edge_scores, edges_in_graph = self.edge_matrices()
+        d = {'cfg':self.cfg, 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges': edge_scores, 'edges_in_graph': edges_in_graph}
+        if neurons:
+            d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.zeros(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
+        torch.save(d, filename)
+        
 
 
     def to_graphviz(
