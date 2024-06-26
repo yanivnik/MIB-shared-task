@@ -1,5 +1,6 @@
 from typing import Callable, List, Union
 
+import math
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -120,7 +121,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 
 def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=False, zero_ablate=False, run_corrupted=False):
+                              node_eval=True, run_corrupted=False, above_curve=False,
+                              log_scale=True, inverse=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
@@ -131,9 +133,9 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
         filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
         sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
         num_edges = len(sorted_itemlist)
-    order = 10
+    
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
-    # percentages = (.001, .002, .005)
+
     faithfulnesses = []
     for pct in percentages:
         this_graph = graph
@@ -142,29 +144,41 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
             for idx, node in enumerate(sorted_itemlist):
                 if idx < curr_num_items:
-                    this_graph.nodes[node[0]].in_graph = True
+                    this_graph.nodes[node[0]].in_graph = True if not inverse else False
                 else:
-                    this_graph.nodes[node[0]].in_graph = False
+                    this_graph.nodes[node[0]].in_graph = False if not inverse else True
         else:
             curr_num_items = int(pct * num_edges)
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
             for idx, edge in enumerate(sorted_itemlist):
                 if idx < curr_num_items:
-                    this_graph.edges[edge[0]].in_graph = True
+                    this_graph.edges[edge[0]].in_graph = True if not inverse else False
                 else:
-                    this_graph.edges[edge[0]].in_graph = False
+                    this_graph.edges[edge[0]].in_graph = False if not inverse else True
+        edge_eval = not node_eval
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, zero_ablate=zero_ablate).mean().item()
         faithfulness = ablated_score / baseline_score
         faithfulnesses.append(faithfulness)
     
-    area = 0.
+    area_under = 0.
+    area_from_100 = 0.
     for i in range(len(faithfulnesses) - 1):
         i_1, i_2 = i, i+1
+        x_1 = percentages[i_1]
+        x_2 = percentages[i_2]
+        # area from point to 100
+        if log_scale:
+            x_1 = math.log(x_1)
+            x_2 = math.log(x_2)
+        trapezoidal = (percentages[i_2] - percentages[i_1]) * \
+                        (((abs(1. - faithfulnesses[i_1])) + (abs(1. - faithfulnesses[i_2]))) / 2)
+        area_from_100 += trapezoidal 
+        
         trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
-        area += trapezoidal
+        area_under += trapezoidal
     average = sum(faithfulnesses) / len(faithfulnesses)
-    return area, average
+    return area_under, area_from_100, average, faithfulnesses
 
 
 def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: List[Callable[[Tensor], Tensor]], run_corrupted=False):
