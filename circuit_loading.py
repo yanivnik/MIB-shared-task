@@ -14,23 +14,37 @@ def load_graph_from_json(json_path: str):
 
     NOTE: This method isn't disk-space efficient, and shouldn't be used when the circuits contains edges between neuron-resolution nodes.
     """
+
     with open(json_path, 'r') as f:
         d = json.load(f)
-        assert all([k in d.keys() for k in ['cfg', 'nodes', 'edges']]), "Bad input JSON format - Missing keys"
 
     g = Graph.from_model(d['cfg'])
-    for name, in_graph in d['nodes'].items():
-        if name.startswith("m") and "." not in name:
-            # MLP Node without specific neurons found - include all neurons
-            for neuron in range(d['cfg']['d_model']):
-                g.nodes[f'{name}.{neuron}'].in_graph = in_graph
+    for name in d['nodes']:
+        if type(d['nodes'][name]) == dict:
+            in_graph = d['nodes'][name]["in_graph"]
+            score = d['nodes'][name]["score"]
+        else:
+            in_graph = d['nodes'][name]
+            score = None
+
+        if name.startswith("m") and "." not in name:    # include all neurons
+            if "d_model" in d["cfg"]:
+                for neuron in range(d['cfg']['d_model']):
+                    g.nodes[f'{name}.{neuron}'].in_graph = in_graph
+                    if score is not None:
+                        g.nodes[f'{name}.{neuron}'].score = score
+            else:
+                g.nodes[name].in_graph = in_graph
+                if score is not None:
+                    g.nodes[name].score = score
         else:
             g.nodes[name].in_graph = in_graph
-    
+            g.nodes[name].score = score
+        
     for name, info in d['edges'].items():
         g.edges[name].score = info['score']
         g.edges[name].in_graph = info['in_graph']
-
+    
     return g
 
 
