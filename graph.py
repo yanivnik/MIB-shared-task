@@ -29,7 +29,7 @@ class Node:
     score: Optional[float]
     qkv_inputs: Optional[List[str]]
     neurons: Optional[torch.Tensor]
-    neurons_scores: Optional[torch.Tensor]
+    neuron_scores: Optional[torch.Tensor]
 
     def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
                  score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None, neuron_scores: Optional[torch.Tensor]=None):
