@@ -91,12 +91,15 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         # activation difference is of size (batch, pos, src_nodes, hidden)
         (fwd_hooks_corrupted, fwd_hooks_clean, _), activation_difference = make_hooks_and_matrices(model, graph, len(clean), n_pos, None)
         
+        # if mean_ablate:
+        #    activation_difference += mean_tensor
+        
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
             
-            # We intervene by subtracting out clean and adding in corrupted activations
+            # We intervene by subtracting out clean and adding in corrupted activations (via activation_difference)
             # In the case of zero ablation, we skip the adding in corrupted activations
-            if zero_ablate:
+            if zero_ablate: # or mean_ablate
                 corrupted_logits = model(corrupted)
             else:
                 with model.hooks(fwd_hooks_corrupted):
