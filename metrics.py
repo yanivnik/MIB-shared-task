@@ -36,8 +36,13 @@ def get_metric(metric_name: str,
         return partial(divergence, divergence_type='js')
     elif metric_name == 'normalized_logit':
         return normalized_logit
-    elif metric_name == 'acc':
-        return accuracy
+    elif metric_name.startswith('acc'):
+        # Find the k for top-k accuracy
+        if metric_name == 'acc':
+            k = 1
+        else:
+            k = int(metric_name.split('-')[-1])
+        return partial(topk_accuracy, k=k)
     elif metric_name == 'logit_diff' or metric_name == 'prob_diff':
         prob = (metric_name == 'prob_diff')
         if 'greater-than' in task:
@@ -57,7 +62,7 @@ def get_metric(metric_name: str,
         raise ValueError(f"got bad metric_name: {metric_name}")
 
 # TODO TEST THIS
-def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False):
+def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False):
     if labels.shape[-1] == 2:
         # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
         labels = labels[:, 0]
@@ -73,19 +78,20 @@ def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor,
     return results
 
 # TODO TEST THIS
-def accuracy(logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False):
+def topk_accuracy(logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1):
     if labels.shape[-1] == 2:
         # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
-        labels = labels[:, 0].view(-1)
+        labels = labels[:, 0]
+    labels = labels.view(-1, 1)
 
     logits = get_logit_positions(logits, input_length)
-    predictions = logits.argmax(dim=-1)
-    accuracy = (predictions == labels).float()
+    predictions = logits.topk(k=k, dim=-1).indices # Get top-k predictions
+    topk_acc = torch.any(predictions.eq(labels.expand_as(predictions)), dim=-1).float() # Check if any of the top-k predictions match the label
     if loss:
-        accuracy = 1 - accuracy
+        topk_acc = 1 - topk_acc
     if mean:
-        accuracy = accuracy.mean()
-    return accuracy
+        topk_acc = topk_acc.mean()
+    return topk_acc
 
 
 def get_logit_positions(logits: torch.Tensor, input_length: torch.Tensor):
