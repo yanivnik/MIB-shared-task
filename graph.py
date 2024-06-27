@@ -29,9 +29,10 @@ class Node:
     score: Optional[float]
     qkv_inputs: Optional[List[str]]
     neurons: Optional[torch.Tensor]
+    neurons_scores: Optional[torch.Tensor]
 
     def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
-                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None):
+                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None, neuron_scores: Optional[torch.Tensor]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
@@ -45,6 +46,7 @@ class Node:
         self.score = score
         self.qkv_inputs = qkv_inputs
         self.neurons = neurons
+        self.neuron_scores = neuron_scores
 
     def __eq__(self, other):
         return self.name == other.name
@@ -249,7 +251,10 @@ class Graph:
         
         # get top-n nodes
         if node:
-            sorted_nodes = sorted(list(self.nodes.values()), key = lambda node: abs_id(node.score), reverse=True)
+            assert all(node.score is not None for node in self.nodes.values() if not isinstance(node, LogitNode)), "All non-logit nodes must have a score to apply top-n nodes"
+            sorted_nodes = sorted([node for node in self.nodes.values() if not isinstance(node, LogitNode)], key = lambda node: abs_id(node.score), reverse=True)
+            
+            self.nodes['logits'].in_graph = True
             for node in sorted_nodes[:n]:
                 node.in_graph = True
             for node in sorted_nodes[n:]:
@@ -394,8 +399,10 @@ class Graph:
     def to_json(self, filename: str, neurons: bool = False):
         # non serializable info
         d = {'cfg':self.cfg, 'nodes': {str(name): bool(node.in_graph) for name, node in self.nodes.items()}, 'edges':{str(name): {'score': None if edge.score is None else float(edge.score), 'in_graph': bool(edge.in_graph)} for name, edge in self.edges.items()}}
+        d['node_scores'] = {str(name): node.score for name, node in self.nodes.items() if node.score is not None}
         if neurons:
             d['neurons'] = {str(name): node.neurons.tolist() for name, node in self.nodes.items() if node.neurons is not None}
+            d['neuron_scores'] = {str(name): node.neuron_scores.tolist() for name, node in self.nodes.items() if node.neuron_scores is not None}
         with open(filename, 'w') as f:
             json.dump(d, f)
             
@@ -406,11 +413,12 @@ class Graph:
         edge_scores, edges_in_graph = self.edge_matrices()
         d = {'cfg':self.cfg, 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges': edge_scores, 'edges_in_graph': edges_in_graph}
         
-        if all(node.score is not None for node in self.nodes.values()  if not isinstance(node, LogitNode)):
+        if all(node.score is not None for node in self.nodes.values() if not isinstance(node, LogitNode)):
             d['node_scores'] = torch.tensor([node.score for node in self.nodes.values()  if not isinstance(node, LogitNode)])
             
         if neurons:
             d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.ones(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
+            d['neuron_scores'] = torch.stack([node.neuron_scores if node.neuron_scores is not None else torch.zeros(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
         torch.save(d, filename)
 
     def to_graphviz(
