@@ -13,7 +13,7 @@ from attribute import get_npos_input_lengths, make_hooks_and_matrices
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False, invert=False):
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
@@ -84,8 +84,6 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
-        if invert:
-            clean, corrupted = corrupted, clean
         n_pos, input_lengths = get_npos_input_lengths(model, clean)
         
         # fwd_hooks_corrupted adds in corrupted acts to activation_difference
@@ -124,7 +122,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     return results
 
 
-def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, prune=True, quiet=False,
+def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, quiet=False,
                               node_eval=True, zero_ablate=False, run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False, absolute=True, neuron_level=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()    
@@ -141,9 +139,12 @@ def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, prune=Tr
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
             graph.apply_topn(curr_num_items, absolute, node=False)
+            
+        if inverse:
+            for edge in graph.edges.values():
+                edge.in_graph = not edge.in_graph
 
-        ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate, invert=inverse, neuron_level=neuron_level).mean().item()
+        ablated_score = evaluate_graph(model, this_graph, dataloader, metrics, quiet=quiet, zero_ablate=zero_ablate, invert=inverse, neuron_level=neuron_level).mean().item()
         faithfulness = ablated_score / baseline_score
         faithfulnesses.append(faithfulness)
     
