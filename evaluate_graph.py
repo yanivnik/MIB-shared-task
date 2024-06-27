@@ -155,9 +155,9 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
                     this_graph.edges[edge[0]].in_graph = True if not inverse else False
                 else:
                     this_graph.edges[edge[0]].in_graph = False if not inverse else True
-        edge_eval = not node_eval
+
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate).mean().item()
+                                       prune=prune, quiet=quiet, zero_ablate=node_eval).mean().item()
         faithfulness = ablated_score / baseline_score
         faithfulnesses.append(faithfulness)
     
