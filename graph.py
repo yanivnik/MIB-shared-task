@@ -211,6 +211,21 @@ class Graph:
     def scores(self, nonzero=False, in_graph=False, sort=True):
         s = torch.tensor([edge.score for edge in self.edges.values() if edge.score != 0 and (edge.in_graph or not in_graph)]) if nonzero else torch.tensor([edge.score for edge in self.edges.values()])
         return torch.sort(s).values if sort else s
+    
+    def weighted_edge_count(self) -> float:
+        """Generates a count of the edges, weighted by number of neurons included if applicable
+
+        Returns:
+            float: weighted edge count
+        """
+        weighted_count = 0
+        for edge in self.edges.values():
+            if edge.in_graph:
+                if edge.parent.neurons is not None:
+                    weighted_count += edge.parent.neurons.sum() / edge.parent.neurons.size(0)
+                else:
+                    weighted_count += 1
+        return weighted_count
 
     def count_included_edges(self):
         return sum(edge.in_graph for edge in self.edges.values())
