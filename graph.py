@@ -373,7 +373,7 @@ class Graph:
         edge_scores, edges_in_graph = self.edge_matrices()
         d = {'cfg':self.cfg, 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges': edge_scores, 'edges_in_graph': edges_in_graph}
         if neurons:
-            d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.zeros(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
+            d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.ones(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
         torch.save(d, filename)
         
 

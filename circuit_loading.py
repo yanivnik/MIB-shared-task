@@ -61,5 +61,9 @@ def load_graph_from_pt(pt_path):
             if edge_name in g.edges.keys():
                 g.edges[edge_name].score = d['edges'][src_idx, dst_idx]
                 g.edges[edge_name].in_graph = d['edges_in_graph'][src_idx, dst_idx]
+                
+    if 'neurons' in d:
+        for i, src_node in enumerate(d['src_nodes']):
+            g.nodes[src_node].neurons = d['neurons'][i]
 
     return g
