@@ -96,9 +96,11 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
             
-            if not zero_ablate:
-                # We intervene by subtracting out clean and adding in corrupted activations
-                # In the case of zero ablation, we skip the adding in corrupted activations
+            # We intervene by subtracting out clean and adding in corrupted activations
+            # In the case of zero ablation, we skip the adding in corrupted activations
+            if zero_ablate:
+                corrupted_logits = model(corrupted)
+            else:
                 with model.hooks(fwd_hooks_corrupted):
                     corrupted_logits = model(corrupted)
                 
@@ -124,7 +126,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, prune=True, quiet=False,
                               node_eval=True, zero_ablate=False, run_corrupted=False, above_curve=False,
-                              log_scale=True, inverse=False):
+                              log_scale=True, inverse=False, absolute=True):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()    
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
@@ -134,11 +136,11 @@ def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, prune=Tr
         if node_eval:
             curr_num_items = int(pct * graph.nodes)
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-            graph.apply_topn(curr_num_items, node=True)
+            graph.apply_topn(curr_num_items, absolute, node=True)
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            graph.apply_topn(curr_num_items, node=False)
+            graph.apply_topn(curr_num_items, absolute, node=False)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, zero_ablate=zero_ablate, invert=inverse).mean().item()
