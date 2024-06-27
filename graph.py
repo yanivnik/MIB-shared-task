@@ -234,6 +234,7 @@ class Graph:
         return sum(node.in_graph for node in self.nodes.values())
 
     def apply_threshold(self, threshold: float, absolute: bool):
+        # include all edges with a score above the the given threshold
         threshold = float(threshold)
         for node in self.nodes.values():
             node.in_graph = True 
@@ -241,20 +242,34 @@ class Graph:
         for edge in self.edges.values():
             edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
     
-    def apply_topn(self, n:int, absolute: bool):
+    def apply_topn(self, n:int, absolute: bool, node=False):
         def abs_id(s: float):
             return abs(s) if absolute else s
-        for node in self.nodes.values():
-            node.in_graph = False
+        
+        # get top-n nodes
+        if node:
+            sorted_nodes = sorted(list(self.nodes.values()), key = lambda node: abs_id(node.score), reverse=True)
+            for node in sorted_nodes[:n]:
+                node.in_graph = True
+            for node in sorted_nodes[n:]:
+                node.in_graph = False
+                
+            for edge in self.edges.values():
+                edge.in_graph = edge.parent.in_graph and edge.child.in_graph
 
-        sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
-        for edge in sorted_edges[:n]:
-            edge.in_graph = True 
-            edge.parent.in_graph = True 
-            edge.child.in_graph = True 
+        # get top-n edges
+        else:
+            for node in self.nodes.values():
+                node.in_graph = False
+            
+            sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
+            for edge in sorted_edges[:n]:
+                edge.in_graph = True 
+                edge.parent.in_graph = True 
+                edge.child.in_graph = True 
 
-        for edge in sorted_edges[n:]:
-            edge.in_graph = False
+            for edge in sorted_edges[n:]:
+                edge.in_graph = False
 
     def apply_greedy(self, n_edges, reset=True, absolute: bool=True):
         if reset:
@@ -287,7 +302,7 @@ class Graph:
             if isinstance(node, LogitNode):
                 continue 
             
-            if any(child_edge.in_graph for child_edge in node.child_edges) :
+            if any(child_edge.in_graph for child_edge in node.child_edges):
                 node.in_graph = True
             else:
                 if prune_childless:
@@ -392,7 +407,6 @@ class Graph:
         if neurons:
             d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.ones(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
         torch.save(d, filename)
-
 
     def to_graphviz(
         self,
