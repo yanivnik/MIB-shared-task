@@ -360,9 +360,11 @@ class Graph:
         return edge_scores, edges_in_graph
 
 
-    def to_json(self, filename: str):
+    def to_json(self, filename: str, neurons: bool = False):
         # non serializable info
         d = {'cfg':self.cfg, 'nodes': {str(name): bool(node.in_graph) for name, node in self.nodes.items()}, 'edges':{str(name): {'score': None if edge.score is None else float(edge.score), 'in_graph': bool(edge.in_graph)} for name, edge in self.edges.items()}}
+        if neurons:
+            d['neurons'] = {str(name): node.neurons.tolist() for name, node in self.nodes.items() if node.neurons is not None}
         with open(filename, 'w') as f:
             json.dump(d, f)
             
@@ -375,7 +377,6 @@ class Graph:
         if neurons:
             d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.ones(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
         torch.save(d, filename)
-        
 
 
     def to_graphviz(
