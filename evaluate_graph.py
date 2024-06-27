@@ -13,7 +13,7 @@ from attribute import get_npos_input_lengths, make_hooks_and_matrices
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False):
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False, invert=False):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
@@ -84,6 +84,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
+        if invert:
+            clean, corrupted = corrupted, clean
         n_pos, input_lengths = get_npos_input_lengths(model, clean)
         
         # fwd_hooks_corrupted adds in corrupted acts to activation_difference
@@ -120,44 +122,26 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     return results
 
 
-def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, run_corrupted=False, above_curve=False,
+def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, prune=True, quiet=False,
+                              node_eval=True, zero_ablate=False, run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False):
-    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
-    
-    if node_eval:
-        filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-        sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
-        num_nodes = len(sorted_itemlist)
-    else:
-        filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
-        sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
-        num_edges = len(sorted_itemlist)
-    
+    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()    
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
     faithfulnesses = []
     for pct in percentages:
         this_graph = graph
         if node_eval:
-            curr_num_items = int(pct * num_nodes)
+            curr_num_items = int(pct * graph.nodes)
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-            for idx, node in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    this_graph.nodes[node[0]].in_graph = True if not inverse else False
-                else:
-                    this_graph.nodes[node[0]].in_graph = False if not inverse else True
+            graph.apply_topn(curr_num_items, node=True)
         else:
-            curr_num_items = int(pct * num_edges)
+            curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            for idx, edge in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    this_graph.edges[edge[0]].in_graph = True if not inverse else False
-                else:
-                    this_graph.edges[edge[0]].in_graph = False if not inverse else True
+            graph.apply_topn(curr_num_items, node=False)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=node_eval).mean().item()
+                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate, invert=inverse).mean().item()
         faithfulness = ablated_score / baseline_score
         faithfulnesses.append(faithfulness)
     
