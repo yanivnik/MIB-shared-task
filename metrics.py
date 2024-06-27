@@ -7,43 +7,105 @@ from torch.nn.functional import kl_div
 from transformers import PreTrainedTokenizer
 from transformer_lens import HookedTransformer
 
-def get_metric(metric_name: str, task: str, tokenizer:Optional[PreTrainedTokenizer]=None, model: Optional[HookedTransformer]=None):
+
+def get_metric(metric_name: str, 
+               task: str, 
+               tokenizer: Optional[PreTrainedTokenizer] = None, 
+               model: Optional[HookedTransformer] = None):
+    """
+    Get a metric function based on the metric name and task.
+    The metric function basic signature is:
+        metric(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False)
+
+        TODO DOCUMENT SPECIFIC PARAMETERS AND MAKE KL/JS PARAMS MATCH THESE
+
+    Args:
+        metric_name (str): The name of the metric. Currently supported are: 
+            - 'kl_divergence' or 'kl' for KL Divergence between the model logits and clean logits.
+            - 'js_divergence' or 'js' for JS Divergence between the model logits and clean logits.
+            - 'normalized_logit' for taking the label logit and normalizing it with the highest logit.
+            - 'acc' for mean accuracy.
+            - 'logit_diff' or 'prob_diff' for Logit difference between 
+        task (str): The task of the model
+        tokenizer (Optional[PreTrainedTokenizer]): The tokenizer of the model
+        model (Optional[HookedTransformer]): The model
+    """
     if metric_name == 'kl_divergence' or metric_name == 'kl':
         return partial(divergence, divergence_type='kl')
     elif metric_name == 'js_divergence' or metric_name == 'js':
         return partial(divergence, divergence_type='js')
+    elif metric_name == 'normalized_logit':
+        return normalized_logit
+    elif metric_name.startswith('acc'):
+        # Find the k for top-k accuracy
+        if metric_name == 'acc':
+            k = 1
+        else:
+            k = int(metric_name.split('-')[-1])
+        return partial(topk_accuracy, k=k)
     elif metric_name == 'logit_diff' or metric_name == 'prob_diff':
         prob = (metric_name == 'prob_diff')
         if 'greater-than' in task:
-            if tokenizer is None:
-                if model is None:
-                    raise ValueError("Either tokenizer or model must be set for greater-than and prob / logit diff")
-                else:
-                    tokenizer = model.tokenizer
-            logit_diff_fn = get_logit_diff_greater_than(tokenizer)
+            assert tokenizer is not None or model is not None, "Either tokenizer or model must be set for greater-than and prob / logit diff"
+            tokenizer = tokenizer or model.tokenizer
+            logit_diff_fn = partial(logit_diff_greater_than, year_indices=get_year_indices(tokenizer))
         elif 'hypernymy' in task:
             logit_diff_fn = logit_diff_hypernymy
         elif task == 'sva':
-            if model is None:
-                raise ValueError("model must be set for sva and prob / logit diff")
-            logit_diff_fn = get_logit_diff_sva(model)
+            assert model is not None, "Model must be set for sva and prob / logit diff"
+            singular_indices, plural_indices = get_singular_and_plural(model, strict=True)
+            logit_diff_fn = partial(logit_diff_sva, singular_indices=singular_indices, plural_indices=plural_indices)
         else:
             logit_diff_fn = logit_diff
         return partial(logit_diff_fn, prob=prob)
     else: 
         raise ValueError(f"got bad metric_name: {metric_name}")
 
+# TODO TEST THIS
+def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False):
+    if labels.shape[-1] == 2:
+        # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
+        labels = labels[:, 0]
+    
+    clean_logits = get_logit_positions(clean_logits, input_length)
+    good_logits = torch.gather(clean_logits, -1, labels.to(clean_logits.device))
+    max_logits = clean_logits.max(dim=-1).values
+    results = good_logits / max_logits
+    if loss:
+        results = -results
+    if mean:
+        results = results.mean()
+    return results
+
+# TODO TEST THIS
+def topk_accuracy(logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1):
+    if labels.shape[-1] == 2:
+        # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
+        labels = labels[:, 0]
+    labels = labels.view(-1, 1)
+
+    logits = get_logit_positions(logits, input_length)
+    predictions = logits.topk(k=k, dim=-1).indices # Get top-k predictions
+    topk_acc = torch.any(predictions.eq(labels.expand_as(predictions)), dim=-1).float() # Check if any of the top-k predictions match the label
+    if loss:
+        topk_acc = 1 - topk_acc
+    if mean:
+        topk_acc = topk_acc.mean()
+    return topk_acc
+
+
 def get_logit_positions(logits: torch.Tensor, input_length: torch.Tensor):
     batch_size = logits.size(0)
     idx = torch.arange(batch_size, device=logits.device)
-
     logits = logits[idx, input_length - 1]
     return logits
+
 
 def js_div(p: torch.tensor, q: torch.tensor):
     p, q = p.view(-1, p.size(-1)), q.view(-1, q.size(-1))
     m = (0.5 * (p + q)).log()
     return 0.5 * (kl_div(m, p.log(), log_target=True, reduction='none').mean(-1) + kl_div(m, q.log(), log_target=True, reduction='none').mean(-1))
+
 
 def divergence(logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, divergence_type: Union[Literal['kl'], Literal['js']]='kl', mean=True, loss=True):
     logits = get_logit_positions(logits, input_length)
@@ -60,6 +122,7 @@ def divergence(logits: torch.Tensor, clean_logits: torch.Tensor, input_length: t
         raise ValueError(f"Expected divergence_type of 'kl' or 'js', but got '{divergence_type}'")
     return results.mean() if mean else results
 
+
 def logit_diff(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False):
     clean_logits = get_logit_positions(clean_logits, input_length)
     cleans = torch.softmax(clean_logits, dim=-1) if prob else clean_logits
@@ -72,6 +135,7 @@ def logit_diff(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input
     if mean: 
         results = results.mean()
     return results
+
 
 def logit_diff_hypernymy(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: List[torch.Tensor], mean=True, prob=False, loss=False):
     clean_logits = get_logit_positions(clean_logits, input_length)
@@ -90,33 +154,32 @@ def logit_diff_hypernymy(clean_logits: torch.Tensor, corrupted_logits: torch.Ten
         results = results.mean()
     return results
 
+
 def get_year_indices(tokenizer: PreTrainedTokenizer):
     return torch.tensor([tokenizer(f'{year:02d}').input_ids[0] for year in range(100)])
 
 
-def get_logit_diff_greater_than(tokenizer: PreTrainedTokenizer):
-    year_indices = get_year_indices(tokenizer) 
-    def logit_diff_greater_than(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False):
-        # Prob diff (negative, since it's a loss)
-        clean_logits = get_logit_positions(clean_logits, input_length)
-        cleans = torch.softmax(clean_logits, dim=-1) if prob else clean_logits
-        cleans = cleans[:, year_indices]
+def logit_diff_greater_than(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False, year_indices=None):
+    # Prob diff (negative, since it's a loss)
+    clean_logits = get_logit_positions(clean_logits, input_length)
+    cleans = torch.softmax(clean_logits, dim=-1) if prob else clean_logits
+    cleans = cleans[:, year_indices]
 
-        results = []
-        if prob:
-            for prob, year in zip(cleans, labels):
-                results.append(prob[year + 1 :].sum() - prob[: year + 1].sum())
-        else:
-            for logit, year in zip(cleans, labels):
-                results.append(logit[year + 1 :].mean() - logit[: year + 1].mean())
+    results = []
+    if prob:
+        for prob, year in zip(cleans, labels):
+            results.append(prob[year + 1 :].sum() - prob[: year + 1].sum())
+    else:
+        for logit, year in zip(cleans, labels):
+            results.append(logit[year + 1 :].mean() - logit[: year + 1].mean())
 
-        results = torch.stack(results)
-        if loss:
-            results = -results
-        if mean: 
-            results = results.mean()
-        return results
-    return logit_diff_greater_than
+    results = torch.stack(results)
+    if loss:
+        results = -results
+    if mean: 
+        results = results.mean()
+    return results
+
 
 def get_singular_and_plural(model, strict=False) -> Tuple[torch.Tensor, torch.Tensor]:
     tokenizer = model.tokenizer
@@ -150,23 +213,21 @@ def get_singular_and_plural(model, strict=False) -> Tuple[torch.Tensor, torch.Te
                
     return torch.tensor(singular_indices, device=model.cfg.device), torch.tensor(plural_indices, device=model.cfg.device)
 
-def get_logit_diff_sva(model, strict=True) -> torch.Tensor:
-    singular_indices, plural_indices = get_singular_and_plural(model, strict=strict)
-    def sva_logit_diff(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False):
-        clean_logits = get_logit_positions(clean_logits, input_length)
-        cleans = torch.softmax(clean_logits, dim=-1) if prob else clean_logits
-        
-        if prob:
-            singular = cleans[:, singular_indices].sum(-1)
-            plural = cleans[:, plural_indices].sum(-1)
-        else:
-            singular = cleans[:, singular_indices].mean(-1)
-            plural = cleans[:, plural_indices].mean(-1)
 
-        results = torch.where(labels.to(cleans.device) == 0, singular - plural, plural - singular)
-        if loss: 
-            results = -results
-        if mean:
-            results = results.mean()
-        return results
-    return sva_logit_diff
+def logit_diff_sva(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False, singular_indices=None, plural_indices=None):
+    clean_logits = get_logit_positions(clean_logits, input_length)
+    cleans = torch.softmax(clean_logits, dim=-1) if prob else clean_logits
+    
+    if prob:
+        singular = cleans[:, singular_indices].sum(-1)
+        plural = cleans[:, plural_indices].sum(-1)
+    else:
+        singular = cleans[:, singular_indices].mean(-1)
+        plural = cleans[:, plural_indices].mean(-1)
+
+    results = torch.where(labels.to(cleans.device) == 0, singular - plural, plural - singular)
+    if loss: 
+        results = -results
+    if mean:
+        results = results.mean()
+    return results
