@@ -245,26 +245,42 @@ class Graph:
         for edge in self.edges.values():
             edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
     
-    def apply_topn(self, n:int, absolute: bool, node=False):
+    def apply_topn(self, n:int, absolute: bool, node=False, neuron=False):
         def abs_id(s: float):
             return abs(s) if absolute else s
         
         # get top-n nodes
         if node:
-            assert all(node.score is not None for node in self.nodes.values() if not isinstance(node, LogitNode)), "All non-logit nodes must have a score to apply top-n nodes"
-            sorted_nodes = sorted([node for node in self.nodes.values() if not isinstance(node, LogitNode)], key = lambda node: abs_id(node.score), reverse=True)
-            
-            self.nodes['logits'].in_graph = True
-            for node in sorted_nodes[:n]:
-                node.in_graph = True
-            for node in sorted_nodes[n:]:
-                node.in_graph = False
+            if neuron:
+                non_logit_nodes = [node for node in self.nodes.values() if not isinstance(node, LogitNode)]
+                neuron_scores = torch.cat([node.neuron_scores for node in self.nodes.values() if not isinstance(node, LogitNode)])
+                top_n_score = neuron_scores.sort(descending=True)[n]
                 
-            for edge in self.edges.values():
-                edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+                self.nodes['logits'].in_graph = True
+                for i, node in enumerate(non_logit_nodes):
+                    node.neurons = node.neuron_scores >= top_n_score
+                    node.in_graph = torch.any(node.neurons)
+                    
+                for edge in self.edges.values():
+                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+                
+            else:
+                assert all(node.score is not None for node in self.nodes.values() if not isinstance(node, LogitNode)), "All non-logit nodes must have a score to apply top-n nodes"
+                sorted_nodes = sorted([node for node in self.nodes.values() if not isinstance(node, LogitNode)], key = lambda node: abs_id(node.score), reverse=True)
+                
+                self.nodes['logits'].in_graph = True
+                for node in sorted_nodes[:n]:
+                    node.in_graph = True
+                for node in sorted_nodes[n:]:
+                    node.in_graph = False
+                    
+                for edge in self.edges.values():
+                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
 
         # get top-n edges
         else:
+            if neuron:
+                raise ValueError("Neuron and edge-level top-n not supported; choose one or the other, or provide the circuit yourself")
             for node in self.nodes.values():
                 node.in_graph = False
             
