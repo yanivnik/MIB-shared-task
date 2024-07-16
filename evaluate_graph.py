@@ -8,7 +8,7 @@ from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import rearrange, einsum
 from copy import deepcopy
-from attribute import get_npos_input_lengths, make_hooks_and_matrices
+from attribute import tokenize_plus, make_hooks_and_matrices
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
@@ -84,7 +84,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
-        n_pos, input_lengths = get_npos_input_lengths(model, clean)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
         
         # fwd_hooks_corrupted adds in corrupted acts to activation_difference
         # fwd_hooks_clean subtracts out clean acts from activation_difference
@@ -98,15 +99,15 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
                 # We intervene by subtracting out clean and adding in corrupted activations
                 # In the case of zero ablation, we skip the adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
-                    corrupted_logits = model(corrupted)
+                    corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
                 if empty_circuit:
                     # if the circuit is totally empty, so is nodes_in_graph
                     # so we just corrupt everything manually like this
-                    logits = model(corrupted)
+                    logits = model(corrupted_tokens, attention_mask=attention_mask)
                 else:
-                    logits = model(clean)
+                    logits = model(clean_tokens, attention_mask=attention_mask)
 
         for i, metric in enumerate(metrics):
             r = metric(logits, corrupted_logits, input_lengths, label).cpu()
