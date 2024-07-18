@@ -151,10 +151,6 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
             filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
             sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
         num_nodes = len(sorted_itemlist)
-    else:
-        filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
-        sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
-        num_edges = len(sorted_itemlist)
     
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
@@ -180,9 +176,9 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
                     else:
                         this_graph.nodes[node[0]].in_graph = False if not inverse else True
         else:
-            curr_num_items = int(pct * num_edges)
+            curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_topn(curr_num_items, absolute=absolute, node_level=True)
+            this_graph.apply_topn(curr_num_items, absolute=absolute)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, zero_ablate=zero_ablate,
