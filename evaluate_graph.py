@@ -64,7 +64,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     def make_input_construction_hooks(activation_differences, in_graph_matrix, neuron_matrix):
         input_construction_hooks = []
         for node in graph.nodes.values():
-            if isinstance(node, InputNode):
+            if isinstance(node, InputNode) or not node.in_graph:
                 pass
             elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
                 fwd_index = graph.prev_index(node)
