@@ -39,6 +39,15 @@ def load_graph_from_json(json_path: str):
         for name, neuron_scores in d['neuron_scores'].items():
             g.nodes[name].neuron_scores = torch.tensor(neuron_scores).float()
 
+    if 'neuron_scores' in d.keys():
+        for name, neuron_scores in d['neuron_scores'].items():
+            if type(neuron_scores) == list:
+                g.nodes[name].neuron_scores = torch.tensor(neuron_scores)
+            elif type(neuron_scores) == float:
+                g.nodes[name].neuron_scores = neuron_scores
+            else:
+                raise ValueError(f"Invalid type for neuron_scores: {type(neuron_scores)}")
+
     return g
 
 # TODO: MAYBE CHANGE THE WAY THAT THE EDGES ARE STORED IN THE GRAPH OBJECT TO THE TENSOR BASED ONE, TO SUPPORT EFFICIENT MASKING

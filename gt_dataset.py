@@ -8,7 +8,8 @@ def collate_EAP(xs):
     return clean, corrupted, labels
 
 class EAPDataset(Dataset):
-    def __init__(self, filepath):
+    def __init__(self, filepath, task='greater-than'):
+        self.task = task
         self.df = pd.read_csv(filepath)
 
     def __len__(self):
@@ -22,7 +23,12 @@ class EAPDataset(Dataset):
     
     def __getitem__(self, index):
         row = self.df.iloc[index]
-        return row['clean'], row['corrupted'], row['correct_idx']
+        if self.task == 'greater-than':
+            return row['clean'], row['corrupted'], row['correct_idx']
+        elif self.task == 'ioi':
+            return row['clean'], row['corrupted'], [row['correct_idx'], row['incorrect_idx']]
+        else:
+            raise ValueError(f'Got invalid task: {self.task}')
     
     def to_dataloader(self, batch_size: int):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)

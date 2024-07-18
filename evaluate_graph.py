@@ -2,13 +2,14 @@ from typing import Callable, List, Union
 
 import math
 import torch
+import numpy as np
 from torch import Tensor
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import rearrange, einsum
 from copy import deepcopy
-from attribute import get_npos_input_lengths, make_hooks_and_matrices
+from attribute import tokenize_plus, make_hooks_and_matrices
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
@@ -84,7 +85,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
-        n_pos, input_lengths = get_npos_input_lengths(model, clean)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
         
         # fwd_hooks_corrupted adds in corrupted acts to activation_difference
         # fwd_hooks_clean subtracts out clean acts from activation_difference
@@ -96,22 +98,23 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
-            
             # We intervene by subtracting out clean and adding in corrupted activations (via activation_difference)
             # In the case of zero ablation, we skip the adding in corrupted activations
             if zero_ablate: # or mean_ablate
                 corrupted_logits = model(corrupted)
             else:
                 with model.hooks(fwd_hooks_corrupted):
-                    corrupted_logits = model(corrupted)
+                    corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            else:
+                corrupted_logits = model(corrupted_tokens)
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
                 if empty_circuit:
                     # if the circuit is totally empty, so is nodes_in_graph
                     # so we just corrupt everything manually like this
-                    logits = model(corrupted)
+                    logits = model(corrupted_tokens, attention_mask=attention_mask)
                 else:
-                    logits = model(clean)
+                    logits = model(clean_tokens, attention_mask=attention_mask)
 
         for i, metric in enumerate(metrics):
             r = metric(logits, corrupted_logits, input_lengths, label).cpu()
@@ -138,6 +141,7 @@ def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, quiet=Fa
             curr_num_items = int(pct * graph.nodes)
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
             graph.apply_topn(curr_num_items, absolute, node=True)
+
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
@@ -148,7 +152,9 @@ def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, quiet=Fa
                 edge.in_graph = not edge.in_graph
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics, quiet=quiet, zero_ablate=zero_ablate, invert=inverse, neuron_level=neuron_level).mean().item()
+
         faithfulness = ablated_score / baseline_score
+        print(faithfulness)
         faithfulnesses.append(faithfulness)
     
     area_under = 0.

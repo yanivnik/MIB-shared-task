@@ -5,25 +5,32 @@ import torch
 from torch.utils.data import DataLoader
 from torch import Tensor
 from transformer_lens import HookedTransformer
+from transformer_lens.utils import get_attention_mask
 from tqdm import tqdm
 from einops import einsum
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
 
-def get_npos_input_lengths(model: HookedTransformer, inputs: List[str]):
-    """Gets the length of the position dimension, and the length of each input sequence
+def tokenize_plus(model: HookedTransformer, inputs: List[str]):
+    """
+    Tokenizes the input strings using the provided model.
 
     Args:
-        model (HookedTransformer): The model to use
-        inputs (List[str]): A list of string inputs
+        model (HookedTransformer): The model used for tokenization.
+        inputs (List[str]): The list of input strings to be tokenized.
 
     Returns:
-        Tuple[int, Tensor]: The size of the position dimension and the length of each input sequence
+        tuple: A tuple containing the following elements:
+            - tokens (torch.Tensor): The tokenized inputs.
+            - attention_mask (torch.Tensor): The attention mask for the tokenized inputs.
+            - input_lengths (torch.Tensor): The lengths of the tokenized inputs.
+            - n_pos (int): The maximum sequence length of the tokenized inputs.
     """
-    tokenized = model.tokenizer(inputs, padding='longest', return_tensors='pt', add_special_tokens=True)
-    n_pos = 1 + tokenized.attention_mask.size(1)
-    input_lengths = 1 + tokenized.attention_mask.sum(1)
-    return n_pos, input_lengths
+    tokens = model.to_tokens(inputs, prepend_bos=True, padding_side='right')
+    attention_mask = get_attention_mask(model.tokenizer, tokens, True)
+    input_lengths = attention_mask.sum(1)
+    n_pos = attention_mask.size(1)
+    return tokens, attention_mask, input_lengths, n_pos
 
 def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:int , n_pos:int, scores: Tensor):
     """Makes a matrix, and hooks to fill it and the score matrix up
@@ -122,15 +129,16 @@ def get_scores(model: HookedTransformer, graph: Graph, dataloader:DataLoader, me
     for clean, corrupted, label in dataloader:
         batch_size = len(clean)
         total_items += batch_size
-        n_pos, input_lengths = get_npos_input_lengths(model, clean)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
 
         (fwd_hooks_corrupted, fwd_hooks_clean, bwd_hooks), activation_difference = make_hooks_and_matrices(model, graph, batch_size, n_pos, scores)
 
         with model.hooks(fwd_hooks=fwd_hooks_corrupted):
-            corrupted_logits = model(corrupted)
+            corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
 
         with model.hooks(fwd_hooks=fwd_hooks_clean, bwd_hooks=bwd_hooks):
-            logits = model(clean)
+            logits = model(clean_tokens, attention_mask=attention_mask)
             metric_value = metric(logits, corrupted_logits, input_lengths, label)
             metric_value.backward()
 
@@ -159,7 +167,8 @@ def get_scores_ig(model: HookedTransformer, graph: Graph, dataloader: DataLoader
     for clean, corrupted, label in dataloader:
         batch_size = len(clean)
         total_items += batch_size
-        n_pos, input_lengths = get_npos_input_lengths(model, clean)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
 
         # Here, we get our fwd / bwd hooks and the activation difference matrix
         # The forward corrupted hooks add the corrupted activations to the activation difference matrix
@@ -169,12 +178,12 @@ def get_scores_ig(model: HookedTransformer, graph: Graph, dataloader: DataLoader
 
         with torch.inference_mode():
             with model.hooks(fwd_hooks=fwd_hooks_corrupted):
-                _ = model(corrupted)
+                _ = model(corrupted_tokens, attention_mask=attention_mask)
 
             input_activations_corrupted = activation_difference[:, :, graph.forward_index(graph.nodes['input'])].clone()
 
             with model.hooks(fwd_hooks=fwd_hooks_clean):
-                clean_logits = model(clean)
+                clean_logits = model(clean_tokens, attention_mask=attention_mask)
 
             input_activations_clean = input_activations_corrupted - activation_difference[:, :, graph.forward_index(graph.nodes['input'])]
 
@@ -189,7 +198,7 @@ def get_scores_ig(model: HookedTransformer, graph: Graph, dataloader: DataLoader
         for step in range(1, steps+1):
             total_steps += 1
             with model.hooks(fwd_hooks=[(graph.nodes['input'].out_hook, input_interpolation_hook(step))], bwd_hooks=bwd_hooks):
-                logits = model(clean)
+                logits = model(clean_tokens, attention_mask=attention_mask)
                 metric_value = metric(logits, clean_logits, input_lengths, label)
                 metric_value.backward()
 
