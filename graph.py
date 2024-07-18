@@ -241,13 +241,13 @@ class Graph:
         for edge in self.edges.values():
             edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
     
-    def apply_topn(self, n:int, absolute: bool, node=False, neuron=False):
+    def apply_topn(self, n:int, absolute: bool, node_level=False, neuron_level=False):
         def abs_id(s: float):
             return abs(s) if absolute else s
 
         # get top-n nodes
-        if node:
-            if neuron:
+        if node_level:
+            if neuron_level:
                 non_logit_nodes = [node for node in self.nodes.values() if not isinstance(node, LogitNode)]
                 neuron_scores = torch.cat([node.neuron_scores for node in self.nodes.values() if not isinstance(node, LogitNode)])
                 top_n_score = neuron_scores.sort(descending=True)[n]
@@ -275,10 +275,21 @@ class Graph:
 
         # get top-n edges
         else:
-            if neuron:
+            if neuron_level:
                 raise ValueError("Neuron and edge-level top-n not supported; choose one or the other, or provide the circuit yourself")
+            for node in self.nodes.values():
+                node.in_graph = False
+            
+            sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
+            for edge in sorted_edges[:n]:
+                edge.in_graph = True 
+                edge.parent.in_graph = True 
+                edge.child.in_graph = True 
 
-    def apply_greedy(self, n_edges, reset=True, absolute: bool=True):
+            for edge in sorted_edges[n:]:
+                edge.in_graph = False
+
+    def apply_greedy(self, n_edges, reset=True, absolute: bool = True):
         if reset:
             for node in self.nodes.values():
                 node.in_graph = False 

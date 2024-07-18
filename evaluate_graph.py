@@ -129,11 +129,11 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     return results
 
 
-def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
+def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
                               node_eval=True, neuron_level=False,
                               run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False,
-                              absolute=False):
+                              absolute=False, zero_ablate=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
@@ -182,10 +182,10 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
         else:
             curr_num_items = int(pct * num_edges)
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_topn(curr_num_items, absolute=absolute)
+            this_graph.apply_topn(curr_num_items, absolute=absolute, node_level=True)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=node_eval,
+                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate,
                                        neuron_level=neuron_level).mean().item()
         faithfulness = ablated_score / baseline_score
         print(faithfulness)
