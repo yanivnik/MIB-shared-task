@@ -95,12 +95,13 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
-            
             if not zero_ablate:
                 # We intervene by subtracting out clean and adding in corrupted activations
                 # In the case of zero ablation, we skip the adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
                     corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            else:
+                corrupted_logits = model(corrupted_tokens)
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
                 if empty_circuit:
