@@ -137,20 +137,14 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
+        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode)]
         if neuron_level:
-            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-            flattened_list = []
-            for node in filtered_nodes:
-                flattened_list.extend(node[1].neuron_scores.tolist())
-            sorted_indices = np.argsort(flattened_list)[::-1]
-            original_nodes = filtered_nodes
-            list_len = len(filtered_nodes[0][1].neuron_scores.tolist())
-            sorted_itemlist = sorted(flattened_list, reverse=True)
-            print(len(sorted_itemlist))
+            scores = torch.cat([node.neuron_scores for node in filtered_nodes], dim=-1)
         else:
-            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-            sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
-        num_nodes = len(sorted_itemlist)
+            scores = torch.tensor([node.score for node in filtered_nodes])
+        if absolute:
+                scores = scores.abs()
+        sorted_scores = scores.sort(descending=True).values
     
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
@@ -158,23 +152,19 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     for pct in percentages:
         this_graph = graph
         if node_eval:
-            curr_num_items = int(pct * num_nodes)
-            print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-            for idx, node in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    if neuron_level:
-                        node_idx = sorted_indices[idx] // list_len
-                        neuron_idx = sorted_indices[idx] % list_len
-                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 1. if not inverse else 0.
-                    else:
-                        this_graph.nodes[node[0]].in_graph = True if not inverse else False
-                else:
-                    if neuron_level:
-                        node_idx = sorted_indices[idx] // list_len
-                        neuron_idx = sorted_indices[idx] % list_len
-                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 0. if not inverse else 1.
-                    else:
-                        this_graph.nodes[node[0]].in_graph = False if not inverse else True
+            curr_num_items = int(pct * len(sorted_scores))
+            threshold = sorted_scores[curr_num_items - 1].item()
+
+            if neuron_level:
+                print(f"Computing results for {pct*100}% of neurons (N={curr_num_items})")
+                for node in filtered_nodes:
+                    node.neurons = (node.neuron_scores >= threshold) if not inverse else (node.neuron_scores < threshold)
+                    node.in_graph = torch.any(node.neurons)
+            else:
+                print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
+                for node in filtered_nodes:
+                    node.in_graph = (node.score >= threshold) if not inverse else (node.score < threshold)
+
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
