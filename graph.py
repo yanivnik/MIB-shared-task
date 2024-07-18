@@ -27,10 +27,12 @@ class Node:
     child_edges: Set['Edge']
     in_graph: bool
     score: Optional[float]
+    neuron_scores: Optional[torch.Tensor]
     qkv_inputs: Optional[List[str]]
 
     def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
-                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None):
+                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None,
+                 neuron_scores: Optional[torch.Tensor]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
@@ -44,6 +46,7 @@ class Node:
         self.score = score
         self.qkv_inputs = qkv_inputs
         self.neurons = neurons
+        self.neuron_scores = neuron_scores
 
     def __eq__(self, other):
         return self.name == other.name
@@ -222,7 +225,7 @@ class Graph:
         for edge in self.edges.values():
             if edge.in_graph:
                 if edge.parent.neurons is not None:
-                    weighted_count += edge.parent.neurons.sum() / edge.parent.neurons.size(0)
+                    weighted_count += (edge.parent.neurons.sum() / edge.parent.neurons.size(0)).item()
                 else:
                     weighted_count += 1
         return weighted_count
@@ -241,22 +244,56 @@ class Graph:
         for edge in self.edges.values():
             edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
     
-    def apply_topn(self, n:int, absolute: bool):
+    def apply_topn(self, n:int, absolute: bool, node_level=False, neuron_level=False):
         def abs_id(s: float):
             return abs(s) if absolute else s
-        for node in self.nodes.values():
-            node.in_graph = False
 
-        sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
-        for edge in sorted_edges[:n]:
-            edge.in_graph = True 
-            edge.parent.in_graph = True 
-            edge.child.in_graph = True 
+        # get top-n nodes
+        if node_level:
+            non_logit_nodes = [node for node in self.nodes.values() if not isinstance(node, LogitNode)]
+            if neuron_level:
+                assert all(node.neuron_scores is not None for node in non_logit_nodes), "All non-logit nodes must have a score to apply top-n nodes"
+                neuron_scores = torch.cat([node.neuron_scores for node in non_logit_nodes])
+                top_n_score = neuron_scores.sort(descending=True)[n]
 
-        for edge in sorted_edges[n:]:
-            edge.in_graph = False
+                self.nodes['logits'].in_graph = True
+                for i, node in enumerate(non_logit_nodes):
+                    node.neurons = node.neuron_scores >= top_n_score
+                    node.in_graph = torch.any(node.neurons)
 
-    def apply_greedy(self, n_edges, reset=True, absolute: bool=True):
+                for edge in self.edges.values():
+                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+
+            else:
+                assert all(node.score is not None for node in non_logit_nodes), "All non-logit nodes must have a score to apply top-n nodes"
+                sorted_nodes = sorted([node for node in non_logit_nodes], key = lambda node: abs_id(node.score), reverse=True)
+
+                self.nodes['logits'].in_graph = True
+                for node in sorted_nodes[:n]:
+                    node.in_graph = True
+                for node in sorted_nodes[n:]:
+                    node.in_graph = False
+
+                for edge in self.edges.values():
+                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+
+        # get top-n edges
+        else:
+            if neuron_level:
+                raise ValueError("Neuron and edge-level top-n not supported; choose one or the other, or provide the circuit yourself")
+            for node in self.nodes.values():
+                node.in_graph = False
+            
+            sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
+            for edge in sorted_edges[:n]:
+                edge.in_graph = True 
+                edge.parent.in_graph = True 
+                edge.child.in_graph = True 
+
+            for edge in sorted_edges[n:]:
+                edge.in_graph = False
+
+    def apply_greedy(self, n_edges, reset=True, absolute: bool = True):
         if reset:
             for node in self.nodes.values():
                 node.in_graph = False 

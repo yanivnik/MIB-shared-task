@@ -1,15 +1,16 @@
 from typing import Callable, List, Union
-
 import math
+from copy import deepcopy
+
+import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import rearrange, einsum
-from copy import deepcopy
-from attribute import get_npos_input_lengths, make_hooks_and_matrices
 
+from attribute import tokenize_plus, make_hooks_and_matrices
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
 
 
@@ -23,25 +24,30 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     empty_circuit = not graph.nodes['logits'].in_graph
 
     # Construct a matrix that indicates which edges are in the graph
-    # We take the opposite matrix, because we'll use at as a mask to specify 
-    # which edges we want to corrupt
     in_graph_matrix = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)
     for edge in graph.edges.values():
         if edge.in_graph:
             in_graph_matrix[graph.forward_index(edge.parent, attn_slice=False), graph.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = 1
-            
-    in_graph_matrix = 1 - in_graph_matrix
     
     # same thing but for neurons
     if neuron_level:
         neuron_matrix = torch.ones((graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
         for node in graph.nodes.values():
             if node.neurons is not None:
-                neuron_matrix[graph.forward_index(edge.parent, attn_slice=False)] = node.neurons
-                
-        neuron_matrix = 1 - neuron_matrix
+                neuron_matrix[graph.forward_index(node, attn_slice=False)] = node.neurons
+
+        # If an edge is in the graph, but not all its neurons are, we need to update that edge anyway
+        node_fully_in_graph = (neuron_matrix.sum(-1) == model.cfg.d_model).to(model.cfg.dtype)
+        in_graph_matrix = einsum(in_graph_matrix, node_fully_in_graph, 'forward backward, forward -> forward backward')
     else:
         neuron_matrix = None
+
+    # We take the opposite matrix, because we'll use at as a mask to specify 
+    # which edges we want to corrupt
+    in_graph_matrix = 1 - in_graph_matrix
+    if neuron_level:
+        neuron_matrix = 1 - neuron_matrix
+
 
     # For each node in the graph, corrupt its inputs, if the corresponding edge isn't in the graph 
     # We corrupt it by adding in the activation difference (b/w clean and corrupted acts)
@@ -58,7 +64,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     def make_input_construction_hooks(activation_differences, in_graph_matrix, neuron_matrix):
         input_construction_hooks = []
         for node in graph.nodes.values():
-            if isinstance(node, InputNode):
+            if isinstance(node, InputNode) or not node.in_graph:
                 pass
             elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
                 fwd_index = graph.prev_index(node)
@@ -84,7 +90,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
-        n_pos, input_lengths = get_npos_input_lengths(model, clean)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
         
         # fwd_hooks_corrupted adds in corrupted acts to activation_difference
         # fwd_hooks_clean subtracts out clean acts from activation_difference
@@ -98,15 +105,17 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
                 # We intervene by subtracting out clean and adding in corrupted activations
                 # In the case of zero ablation, we skip the adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
-                    corrupted_logits = model(corrupted)
+                    corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            else:
+                corrupted_logits = model(corrupted_tokens)
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
                 if empty_circuit:
                     # if the circuit is totally empty, so is nodes_in_graph
                     # so we just corrupt everything manually like this
-                    logits = model(corrupted)
+                    logits = model(corrupted_tokens, attention_mask=attention_mask)
                 else:
-                    logits = model(clean)
+                    logits = model(clean_tokens, attention_mask=attention_mask)
 
         for i, metric in enumerate(metrics):
             r = metric(logits, corrupted_logits, input_lengths, label).cpu()
@@ -120,19 +129,22 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     return results
 
 
-def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, run_corrupted=False, above_curve=False,
-                              log_scale=True, inverse=False):
+def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
+                              node_eval=True, neuron_level=False,
+                              run_corrupted=False, above_curve=False,
+                              log_scale=True, inverse=False,
+                              absolute=False, zero_ablate=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
-        filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-        sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
-        num_nodes = len(sorted_itemlist)
-    else:
-        filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
-        sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
-        num_edges = len(sorted_itemlist)
+        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode)]
+        if neuron_level:
+            scores = torch.cat([node.neuron_scores for node in filtered_nodes], dim=-1)
+        else:
+            scores = torch.tensor([node.score for node in filtered_nodes])
+        if absolute:
+                scores = scores.abs()
+        sorted_scores = scores.sort(descending=True).values
     
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
@@ -140,25 +152,29 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
     for pct in percentages:
         this_graph = graph
         if node_eval:
-            curr_num_items = int(pct * num_nodes)
-            print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-            for idx, node in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    this_graph.nodes[node[0]].in_graph = True if not inverse else False
-                else:
-                    this_graph.nodes[node[0]].in_graph = False if not inverse else True
+            curr_num_items = int(pct * len(sorted_scores))
+            threshold = sorted_scores[curr_num_items - 1].item()
+
+            if neuron_level:
+                print(f"Computing results for {pct*100}% of neurons (N={curr_num_items})")
+                for node in filtered_nodes:
+                    node.neurons = (node.neuron_scores >= threshold) if not inverse else (node.neuron_scores < threshold)
+                    node.in_graph = torch.any(node.neurons)
+            else:
+                print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
+                for node in filtered_nodes:
+                    node.in_graph = (node.score >= threshold) if not inverse else (node.score < threshold)
+
         else:
-            curr_num_items = int(pct * num_edges)
+            curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            for idx, edge in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    this_graph.edges[edge[0]].in_graph = True if not inverse else False
-                else:
-                    this_graph.edges[edge[0]].in_graph = False if not inverse else True
+            this_graph.apply_topn(curr_num_items, absolute=absolute)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=node_eval).mean().item()
+                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate,
+                                       neuron_level=neuron_level).mean().item()
         faithfulness = ablated_score / baseline_score
+        print(faithfulness)
         faithfulnesses.append(faithfulness)
     
     area_under = 0.
