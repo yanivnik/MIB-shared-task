@@ -126,7 +126,8 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
                               node_eval=True, neuron_level=False,
                               run_corrupted=False, above_curve=False,
-                              log_scale=True, inverse=False):
+                              log_scale=True, inverse=False,
+                              absolute=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
@@ -175,11 +176,7 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
         else:
             curr_num_items = int(pct * num_edges)
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            for idx, edge in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    this_graph.edges[edge[0]].in_graph = True if not inverse else False
-                else:
-                    this_graph.edges[edge[0]].in_graph = False if not inverse else True
+            this_graph.apply_topn(curr_num_items, absolute=absolute)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, zero_ablate=node_eval,
