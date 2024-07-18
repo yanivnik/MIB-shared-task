@@ -30,7 +30,8 @@ class Node:
     qkv_inputs: Optional[List[str]]
 
     def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
-                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None):
+                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None,
+                 neurons: Optional[torch.Tensor]=None, neuron_scores: Optional[torch.Tensor]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
@@ -44,6 +45,7 @@ class Node:
         self.score = score
         self.qkv_inputs = qkv_inputs
         self.neurons = neurons
+        self.neuron_scores = neuron_scores
 
     def __eq__(self, other):
         return self.name == other.name
@@ -61,10 +63,11 @@ class LogitNode(Node):
         super().__init__(name, n_layers - 1, f"blocks.{n_layers - 1}.hook_resid_post", '', index)
         
 class MLPNode(Node):
-    def __init__(self, layer: int, neurons: Optional[torch.Tensor] = None):
+    def __init__(self, layer: int, neurons: Optional[torch.Tensor] = None, neuron_scores: Optional[torch.Tensor] = None):
         name = f'm{layer}'
         index = slice(None)
-        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index, neurons=neurons)
+        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index,
+                         neurons=neurons, neuron_scores=neuron_scores)
 
 class AttentionNode(Node):
     head: int
@@ -226,6 +229,28 @@ class Graph:
                 else:
                     weighted_count += 1
         return weighted_count
+    
+    def weighted_node_count(self) -> float:
+        """Generates a count of the nodes, weighted by number of neurons included and percentage of
+           possible out-edges from this node if applicable
+        
+        Returns:
+            float: weighted node count
+        """
+        weighted_count = 0
+        for node in self.nodes.values():
+            if node.in_graph:
+                edge_pct = 0
+                for edge in self.edges.values():
+                    if edge.parent == node:
+                        if edge.in_graph:
+                            edge_pct += 1
+                        total += 1
+                edge_pct /= total
+                if node.neurons is not None:
+                    weighted_count += edge_pct * (node.neurons.sum() / node.neurons.size(0))
+                else:
+                    weighted_count += edge_pct
 
     def count_included_edges(self):
         return sum(edge.in_graph for edge in self.edges.values())

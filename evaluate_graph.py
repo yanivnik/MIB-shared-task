@@ -2,6 +2,7 @@ from typing import Callable, List, Union
 
 import math
 import torch
+import numpy as np
 from torch import Tensor
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
@@ -122,13 +123,25 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 
 def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, run_corrupted=False, above_curve=False,
+                              node_eval=True, neuron_level=False,
+                              run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
-        filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-        sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
+        if neuron_level:
+            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
+            flattened_list = []
+            for node in filtered_nodes:
+                flattened_list.extend(node[1].neuron_scores.tolist())
+            sorted_indices = np.argsort(flattened_list)[::-1]
+            original_nodes = filtered_nodes
+            list_len = len(filtered_nodes[0][1].neuron_scores.tolist())
+            sorted_itemlist = sorted(flattened_list, reverse=True)
+            print(len(sorted_itemlist))
+        else:
+            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
+            sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
         num_nodes = len(sorted_itemlist)
     else:
         filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
@@ -145,9 +158,19 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
             for idx, node in enumerate(sorted_itemlist):
                 if idx < curr_num_items:
-                    this_graph.nodes[node[0]].in_graph = True if not inverse else False
+                    if neuron_level:
+                        node_idx = sorted_indices[idx] // list_len
+                        neuron_idx = sorted_indices[idx] % list_len
+                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 1. if not inverse else 0.
+                    else:
+                        this_graph.nodes[node[0]].in_graph = True if not inverse else False
                 else:
-                    this_graph.nodes[node[0]].in_graph = False if not inverse else True
+                    if neuron_level:
+                        node_idx = sorted_indices[idx] // list_len
+                        neuron_idx = sorted_indices[idx] % list_len
+                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 0. if not inverse else 1.
+                    else:
+                        this_graph.nodes[node[0]].in_graph = False if not inverse else True
         else:
             curr_num_items = int(pct * num_edges)
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
@@ -158,8 +181,10 @@ def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, qui
                     this_graph.edges[edge[0]].in_graph = False if not inverse else True
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=node_eval).mean().item()
+                                       prune=prune, quiet=quiet, zero_ablate=node_eval,
+                                       neuron_level=neuron_level).mean().item()
         faithfulness = ablated_score / baseline_score
+        print(faithfulness)
         faithfulnesses.append(faithfulness)
     
     area_under = 0.
