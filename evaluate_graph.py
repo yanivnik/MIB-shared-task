@@ -93,11 +93,16 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         # activation difference is of size (batch, pos, src_nodes, hidden)
         (fwd_hooks_corrupted, fwd_hooks_clean, _), activation_difference = make_hooks_and_matrices(model, graph, len(clean), n_pos, None)
         
+        # if mean_ablate:
+        #    activation_difference += mean_tensor
+        
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
-            if not zero_ablate:
-                # We intervene by subtracting out clean and adding in corrupted activations
-                # In the case of zero ablation, we skip the adding in corrupted activations
+            # We intervene by subtracting out clean and adding in corrupted activations (via activation_difference)
+            # In the case of zero ablation, we skip the adding in corrupted activations
+            if zero_ablate: # or mean_ablate
+                corrupted_logits = model(corrupted)
+            else:
                 with model.hooks(fwd_hooks_corrupted):
                     corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
             else:
@@ -123,64 +128,31 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     return results
 
 
-def evaluate_area_under_curve(model, graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, neuron_level=False,
-                              run_corrupted=False, above_curve=False,
-                              log_scale=True, inverse=False,
-                              absolute=False):
-    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
-    
-    if node_eval:
-        if neuron_level:
-            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-            flattened_list = []
-            for node in filtered_nodes:
-                flattened_list.extend(node[1].neuron_scores.tolist())
-            sorted_indices = np.argsort(flattened_list)[::-1]
-            original_nodes = filtered_nodes
-            list_len = len(filtered_nodes[0][1].neuron_scores.tolist())
-            sorted_itemlist = sorted(flattened_list, reverse=True)
-            print(len(sorted_itemlist))
-        else:
-            filtered_nodes = [(node, graph.nodes[node]) for node in graph.nodes if isinstance(graph.nodes[node], MLPNode)]
-            sorted_itemlist = sorted(filtered_nodes, key=lambda x: x[1].score, reverse=True)
-        num_nodes = len(sorted_itemlist)
-    else:
-        filtered_edges = [(name, graph.edges[name]) for name in graph.edges]
-        sorted_itemlist = sorted(filtered_edges, key=lambda x: x[1].score, reverse=True)
-        num_edges = len(sorted_itemlist)
-    
+def evaluate_area_under_curve(model, graph: Graph, dataloader, metrics, quiet=False,
+                              node_eval=True, zero_ablate=False, run_corrupted=False, above_curve=False,
+                              log_scale=True, inverse=False, absolute=True, neuron_level=False):
+    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()    
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
     faithfulnesses = []
     for pct in percentages:
         this_graph = graph
         if node_eval:
-            curr_num_items = int(pct * num_nodes)
+            curr_num_items = int(pct * graph.nodes)
             print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-            for idx, node in enumerate(sorted_itemlist):
-                if idx < curr_num_items:
-                    if neuron_level:
-                        node_idx = sorted_indices[idx] // list_len
-                        neuron_idx = sorted_indices[idx] % list_len
-                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 1. if not inverse else 0.
-                    else:
-                        this_graph.nodes[node[0]].in_graph = True if not inverse else False
-                else:
-                    if neuron_level:
-                        node_idx = sorted_indices[idx] // list_len
-                        neuron_idx = sorted_indices[idx] % list_len
-                        this_graph.nodes[original_nodes[node_idx][0]].neurons[neuron_idx] = 0. if not inverse else 1.
-                    else:
-                        this_graph.nodes[node[0]].in_graph = False if not inverse else True
-        else:
-            curr_num_items = int(pct * num_edges)
-            print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_topn(curr_num_items, absolute=absolute)
+            graph.apply_topn(curr_num_items, absolute, node=True)
 
-        ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=node_eval,
-                                       neuron_level=neuron_level).mean().item()
+        else:
+            curr_num_items = int(pct * len(graph.edges))
+            print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
+            graph.apply_topn(curr_num_items, absolute, node=False)
+            
+        if inverse:
+            for edge in graph.edges.values():
+                edge.in_graph = not edge.in_graph
+
+        ablated_score = evaluate_graph(model, this_graph, dataloader, metrics, quiet=quiet, zero_ablate=zero_ablate, invert=inverse, neuron_level=neuron_level).mean().item()
+
         faithfulness = ablated_score / baseline_score
         print(faithfulness)
         faithfulnesses.append(faithfulness)

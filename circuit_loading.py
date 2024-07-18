@@ -27,9 +27,17 @@ def load_graph_from_json(json_path: str):
         g.edges[name].score = info['score']
         g.edges[name].in_graph = info['in_graph']
         
-    if 'neurons' in d.keys():
+    if 'node_scores' in d:
+        for name, score in d['node_scores'].items():
+            g.nodes[name].score = score
+        
+    if 'neurons' in d:
         for name, neurons in d['neurons'].items():
             g.nodes[name].neurons = torch.tensor(neurons).float()
+            
+    if 'neuron_scores' in d:
+        for name, neuron_scores in d['neuron_scores'].items():
+            g.nodes[name].neuron_scores = torch.tensor(neuron_scores).float()
 
     if 'neuron_scores' in d.keys():
         for name, neuron_scores in d['neuron_scores'].items():
@@ -70,9 +78,17 @@ def load_graph_from_pt(pt_path):
             if edge_name in g.edges.keys():
                 g.edges[edge_name].score = d['edges'][src_idx, dst_idx]
                 g.edges[edge_name].in_graph = d['edges_in_graph'][src_idx, dst_idx]
+    
+    if 'node_scores' in d:
+        for i, src_node in enumerate(d['src_nodes']):
+            g.nodes[src_node].score = d['node_scores'][i]
                 
     if 'neurons' in d:
         for i, src_node in enumerate(d['src_nodes']):
             g.nodes[src_node].neurons = d['neurons'][i]
+    
+    if 'neuron_scores' in d:
+        for i, src_node in enumerate(d['src_nodes']):
+            g.nodes[src_node].neuron_scores = d['neuron_scores'][i]
 
     return g
