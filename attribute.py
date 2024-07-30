@@ -11,7 +11,7 @@ from einops import einsum
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
 
-def tokenize_plus(model: HookedTransformer, inputs: List[str]):
+def tokenize_plus(model: HookedTransformer, inputs: List[str], max_length: Optional[int] = None):
     """
     Tokenizes the input strings using the provided model.
 
@@ -26,7 +26,12 @@ def tokenize_plus(model: HookedTransformer, inputs: List[str]):
             - input_lengths (torch.Tensor): The lengths of the tokenized inputs.
             - n_pos (int): The maximum sequence length of the tokenized inputs.
     """
-    tokens = model.to_tokens(inputs, prepend_bos=True, padding_side='right')
+    if max_length is not None:
+        old_n_ctx = model.cfg.n_ctx
+        model.cfg.n_ctx = max_length
+    tokens = model.to_tokens(inputs, prepend_bos=True, padding_side='right', truncate=(max_length is not None))
+    if max_length is not None:
+        model.cfg.n_ctx = old_n_ctx
     attention_mask = get_attention_mask(model.tokenizer, tokens, True)
     input_lengths = attention_mask.sum(1)
     n_pos = attention_mask.size(1)
@@ -52,7 +57,7 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
     fwd_hooks_corrupted = []
     bwd_hooks = []
     
-    def activation_hook(index, activations, hook, add:bool=True):
+    def activation_hook(index, activations, hook, add: bool = True):
         acts = activations.detach()
         if not add:
             acts = -acts

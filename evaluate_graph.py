@@ -1,23 +1,101 @@
-from typing import Callable, List, Union
+from typing import Callable, List, Union, Literal, Optional
 import math
-from copy import deepcopy
+from functools import partial
 
-import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 from transformer_lens import HookedTransformer
 from tqdm import tqdm
-from einops import rearrange, einsum
+from einops import einsum
 
 from attribute import tokenize_plus, make_hooks_and_matrices
-from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode, Node
+from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
+
+def compute_mean_activations(model: HookedTransformer, graph: Graph, dataloader: DataLoader, per_position=False):
+    """
+    Compute the mean activations of a graph's nodes over a dataset.
+    """
+    def activation_hook(index, activations, hook, means=None, input_lengths=None):
+        # defining a hook that will fill up our means tensor. Means is of shape
+        # (n_pos, graph.n_forward, model.cfg.d_model) if per_position is True, otherwise
+        # (graph.n_forward, model.cfg.d_model) 
+        acts = activations.detach()
+
+        # if you gave this hook input lengths, we assume you want to mean over positions
+        if input_lengths is not None:
+            mask = torch.zeros_like(activations)
+            # mask out all padding positions
+            mask[torch.arange(activations.size(0)), input_lengths - 1] = 1
+            
+            # we need ... because there might be a head index as well
+            item_means = einsum(acts, mask, 'batch pos ... hidden, batch pos ... hidden -> batch ... hidden')
+            
+            # mean over the positions we did take, position-wise
+            if len(item_means.size()) == 3:
+                item_means /= input_lengths.unsqueeze(-1).unsqueeze(-1)
+            else:
+                item_means /= input_lengths.unsqueeze(-1)
+
+            means[index] += item_means.sum(0)
+        else:
+            means[:, index] += acts.sum(0)
+
+    # we're going to get all of the out hooks / indices we need for making hooks
+    # but we can't make them until we have input length masks
+    processed_attn_layers = set()
+    hook_points_indices = []
+    for node in graph.nodes.values():
+        if isinstance(node, AttentionNode):
+            if node.layer in processed_attn_layers:
+                continue
+            processed_attn_layers.add(node.layer)
+        
+        if not isinstance(node, LogitNode):
+            hook_points_indices.append((node.out_hook, graph.forward_index(node)))
+
+    means_initialized = False
+    total = 0
+    for batch in tqdm(dataloader, desc='Computing mean'):
+        # maybe the dataset is given as a tuple, maybe its just raw strings
+        batch_inputs = batch[0] if isinstance(batch, tuple) else batch
+        tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, batch_inputs, max_length=512)
+        total += len(batch_inputs)
+
+        if not means_initialized:
+            # here is where we store the means
+            if per_position:
+                means = torch.zeros((n_pos, graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+            else:
+                means = torch.zeros((graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+            means_initialized = True
+
+        if per_position:
+            input_lengths = None
+        add_to_mean_hooks = [(hook_point, partial(activation_hook, index, means=means, input_lengths=input_lengths)) for hook_point, index in hook_points_indices]
+
+        with model.hooks(fwd_hooks=add_to_mean_hooks):
+            model(tokens, attention_mask=attention_mask)
+
+    means = means.squeeze(0)
+    means /= total
+    return means if per_position else means.mean(0)
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: List[Callable[[Tensor], Tensor]], prune:bool=True, quiet=False, zero_ablate=False, neuron_level=False):
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], prune:bool=True, quiet=False, intervention: Union[Literal['patching'], Literal['zero'], Literal['mean'], Literal['mean-positional']]='patching', neuron_level=False, intervention_dataloader: Optional[DataLoader]=None):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
+    assert intervention in ['patching', 'zero', 'mean', 'mean-positional'], f"Invalid intervention: {intervention}"
+    
+    if 'mean' in intervention:
+        assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
+        per_position = 'positional' in intervention
+        means = compute_mean_activations(model, graph, intervention_dataloader, per_position=per_position)
+        means.unsqueeze(0)
+        if not per_position:
+            means = means.unsqueeze(0)
+
     if prune:
         graph.prune_dead_nodes()
 
@@ -101,13 +179,17 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         input_construction_hooks = make_input_construction_hooks(activation_difference, in_graph_matrix, neuron_matrix)
         with torch.inference_mode():
             
-            if not zero_ablate:
+            if intervention == 'patching':
                 # We intervene by subtracting out clean and adding in corrupted activations
-                # In the case of zero ablation, we skip the adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
                     corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
             else:
+                # In the case of zero or mean ablation, we skip the adding in corrupted activations
                 corrupted_logits = model(corrupted_tokens)
+
+                # but in mean ablations, we need to add the mean in
+                if 'mean' in intervention:
+                    activation_difference += means
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
                 if empty_circuit:
@@ -133,7 +215,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
                               node_eval=True, neuron_level=False,
                               run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False,
-                              absolute=False, zero_ablate=False):
+                              absolute=False, intervention='patching', intervention_dataloader=None):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
@@ -171,7 +253,8 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
             this_graph.apply_topn(curr_num_items, absolute=absolute)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, zero_ablate=zero_ablate,
+                                       prune=prune, quiet=quiet, intervention=intervention,
+                                       intervention_dataloader=intervention_dataloader, 
                                        neuron_level=neuron_level).mean().item()
         faithfulness = ablated_score / baseline_score
         print(faithfulness)
