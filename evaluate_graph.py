@@ -164,11 +164,17 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
                 print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
                 for node in filtered_nodes:
                     node.in_graph = (node.score >= threshold) if not inverse else (node.score < threshold)
+            weighted_node_count = this_graph.weighted_node_count()
+            weighted_edge_count = this_graph.weighted_edge_count()
+            print(weighted_edge_count)
 
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_topn(curr_num_items, absolute=absolute)
+            this_graph.apply_greedy(curr_num_items, absolute=absolute)
+            weighted_node_count = this_graph.weighted_node_count()
+            weighted_edge_count = this_graph.weighted_edge_count()
+            print(weighted_edge_count)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, zero_ablate=zero_ablate,
