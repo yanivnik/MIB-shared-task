@@ -92,14 +92,12 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
         per_position = 'positional' in intervention
         means = compute_mean_activations(model, graph, intervention_dataloader, per_position=per_position)
-        means.unsqueeze(0)
+        means = means.unsqueeze(0)
         if not per_position:
             means = means.unsqueeze(0)
 
     if prune:
         graph.prune_dead_nodes()
-
-    empty_circuit = not graph.nodes['logits'].in_graph
 
     # Construct a matrix that indicates which edges are in the graph
     in_graph_matrix = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)
@@ -157,6 +155,16 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
                     input_construction_hooks.append((node.qkv_inputs[i], input_cons_hook))
             else:
                 raise ValueError(f"Invalid node: {node} of type {type(node)}")
+
+        # If there are no nodes in the graph, we need to add a hook to the logits node
+        # This will construct its input as all corrupted / ablated, based on the ablation chosen
+        if len(input_construction_hooks) == 0:
+            node = graph.nodes['logits']
+            fwd_index = graph.prev_index(node)
+            bwd_index = graph.backward_index(node)
+            input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
+            input_construction_hooks = [(node.in_hook, input_cons_hook)]
+
         return input_construction_hooks
     
     # and here we actually run / evaluate the model
@@ -188,16 +196,11 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
                 if 'mean' in intervention:
                     activation_difference += means
 
-            # For some metrics (e.g. accuracy or KL, we need the clean logits)
+            # For some metrics (e.g. accuracy or KL), we need the clean logits
             clean_logits = model(clean_tokens, attention_mask=attention_mask)
                 
             with model.hooks(fwd_hooks_clean + input_construction_hooks):
-                if empty_circuit:
-                    # if the circuit is totally empty, so is nodes_in_graph
-                    # so we just corrupt everything manually like this
-                    logits = model(corrupted_tokens, attention_mask=attention_mask)
-                else:
-                    logits = model(clean_tokens, attention_mask=attention_mask)
+                logits = model(clean_tokens, attention_mask=attention_mask)
 
         for i, metric in enumerate(metrics):
             r = metric(logits, clean_logits, input_lengths, label).cpu()
