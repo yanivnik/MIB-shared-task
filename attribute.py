@@ -64,7 +64,7 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
         try:
             activation_difference[:, :, index] += acts
         except RuntimeError as e:
-            print(hook.name, activation_difference[:, :, index].size(), acts.size())
+            print(hook.name, activation_difference[:, :, index].size(), activation_difference.device, acts.size(), acts.device)
             raise e
     
     def gradient_hook(fwd_index: Union[slice, int], bwd_index: Union[slice, int], gradients:torch.Tensor, hook):
@@ -88,7 +88,7 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
             s = s.squeeze(1)
             scores[:fwd_index, bwd_index] += s
         except RuntimeError as e:
-            print(hook.name, activation_difference.size(), grads.size())
+            print(hook.name, activation_difference.size(), activation_difference.device, grads.size(), grads.device)
             raise e
 
     for name, node in graph.nodes.items():
@@ -186,7 +186,6 @@ def compute_mean_activations(model: HookedTransformer, graph: Graph, dataloader:
 
 
 def get_scores_eap(model: HookedTransformer, graph: Graph, dataloader:DataLoader, metric: Callable[[Tensor], Tensor], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None, quiet=False):
-    scores = torch.zeros((graph.n_forward, graph.n_backward), dtype=model.cfg.dtype)    
     """Gets edge attribution scores using EAP.
 
     Args:
@@ -199,6 +198,7 @@ def get_scores_eap(model: HookedTransformer, graph: Graph, dataloader:DataLoader
     Returns:
         Tensor: a [src_nodes, dst_nodes] tensor of scores for each edge
     """
+    scores = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)    
 
     if 'mean' in intervention:
         assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
@@ -223,11 +223,10 @@ def get_scores_eap(model: HookedTransformer, graph: Graph, dataloader:DataLoader
                 # We intervene by subtracting out clean and adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
                     _ = model(corrupted_tokens, attention_mask=attention_mask)
-            else:
+            elif 'mean' in intervention:
                 # In the case of zero or mean ablation, we skip the adding in corrupted activations
                 # but in mean ablations, we need to add the mean in
-                if 'mean' in intervention:
-                    activation_difference += means
+                activation_difference += means
 
             # For some metrics (e.g. accuracy or KL), we need the clean logits
             clean_logits = model(clean_tokens, attention_mask=attention_mask)
@@ -327,18 +326,17 @@ def get_scores_ig_activations(model: HookedTransformer, graph: Graph, dataloader
         (fwd_hooks_corrupted, _, _), activations_corrupted = make_hooks_and_matrices(model, graph, batch_size, n_pos, scores)
         (fwd_hooks_clean, _, _), activations_clean = make_hooks_and_matrices(model, graph, batch_size, n_pos, scores)
 
-        with torch.inference_mode():
-            if intervention == 'patching':
-                with model.hooks(fwd_hooks=fwd_hooks_corrupted):
-                    _ = model(corrupted_tokens, attention_mask=attention_mask)
+        if intervention == 'patching':
+            with model.hooks(fwd_hooks=fwd_hooks_corrupted):
+                _ = model(corrupted_tokens, attention_mask=attention_mask)
 
-            elif 'mean' in intervention:
-                activation_difference += means
+        elif 'mean' in intervention:
+            activation_difference += means
 
-            with model.hooks(fwd_hooks=fwd_hooks_clean):
-                clean_logits = model(clean_tokens, attention_mask=attention_mask)
+        with model.hooks(fwd_hooks=fwd_hooks_clean):
+            clean_logits = model(clean_tokens, attention_mask=attention_mask)
 
-            activation_difference += activations_corrupted.clone() - activations_clean.clone()
+            activation_difference += activations_corrupted.clone().detach() - activations_clean.clone().detach()
 
         def output_interpolation_hook(k: int, clean: torch.Tensor, corrupted: torch.Tensor):
             def hook_fn(activations: torch.Tensor, hook):
