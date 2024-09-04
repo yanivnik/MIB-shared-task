@@ -72,7 +72,9 @@ def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor,
     return results
 
 # TODO TEST THIS
-def topk_accuracy(logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1):
+def topk_accuracy(logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1):
+    if type(labels) == tuple:
+        labels = torch.Tensor(labels).to("cuda")
     if labels.shape[-1] == 2:
         # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
         labels = labels[:, 0]
@@ -120,7 +122,9 @@ def divergence(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_l
 def logit_diff(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False):
     circuit_logits = get_logit_positions(circuit_logits, input_length)
     circuit_outputs = torch.softmax(circuit_logits, dim=-1) if prob else circuit_logits
-    good_bad = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))
+    # good_bad = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))
+    labels = torch.LongTensor(labels).to("cuda")
+    good_bad = torch.gather(circuit_outputs, -1, labels)
     results = good_bad[:, 0] - good_bad[:, 1]
 
     if loss:
@@ -132,13 +136,15 @@ def logit_diff(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_l
 
 
 def get_year_indices(tokenizer: PreTrainedTokenizer):
-    return torch.tensor([tokenizer(f'{year:02d}').input_ids[0] for year in range(100)])
+    return torch.tensor([tokenizer(f'{year:02d}', add_special_tokens=False).input_ids[0] for year in range(100)])
 
 
 def logit_diff_greater_than(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False, year_indices=None):
     # Prob diff (negative, since it's a loss)
     circuit_logits = get_logit_positions(circuit_logits, input_length)
     circuit_outputs = torch.softmax(circuit_logits, dim=-1) if prob else circuit_logits
+    print(circuit_outputs)
+    print(circuit_outputs[:, tuple(year_indices)])
     circuit_outputs = circuit_outputs[:, year_indices]
 
     results = []

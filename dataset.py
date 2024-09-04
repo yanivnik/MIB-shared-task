@@ -35,11 +35,14 @@ class EAPDataset(Dataset):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)
     
 class HFEAPDataset(Dataset):
-    def __init__(self, url, tokenizer, split="train", task='ioi'):
+    def __init__(self, url, tokenizer, split="train", task='ioi', num_examples=None):
         self.task = task
         self.tokenizer = tokenizer
         self.dataset = load_dataset(url, split=split)
         self.dataset = self.filter_dataset()
+        self.dataset = self.shuffle()
+        if num_examples:
+            self.dataset = self.head(num_examples)
 
     def __len__(self):
         return len(self.dataset)
@@ -48,7 +51,7 @@ class HFEAPDataset(Dataset):
         return self.dataset.shuffle()
     
     def head(self, n: int):
-        return self.dataset[:n]
+        return [self.dataset[i] for i in range(n)]
 
     def filter_dataset(self):
         if self.task == 'ioi':

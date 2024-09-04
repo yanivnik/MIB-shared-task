@@ -19,7 +19,7 @@ def compute_mean_activations(model: HookedTransformer, graph: Graph, dataloader:
     def activation_hook(index, activations, hook, means=None, input_lengths=None):
         # defining a hook that will fill up our means tensor. Means is of shape
         # (n_pos, graph.n_forward, model.cfg.d_model) if per_position is True, otherwise
-        # (graph.n_forward, model.cfg.d_model) 
+        # (graph.n_forward, model.cfg.d_model)
         acts = activations.detach()
 
         # if you gave this hook input lengths, we assume you want to mean over positions
@@ -82,7 +82,8 @@ def compute_mean_activations(model: HookedTransformer, graph: Graph, dataloader:
     return means if per_position else means.mean(0)
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], prune:bool=True, quiet=False, intervention: Union[Literal['patching'], Literal['zero'], Literal['mean'], Literal['mean-positional']]='patching', neuron_level=False, intervention_dataloader: Optional[DataLoader]=None):
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], prune:bool=True, quiet=False, intervention: Union[Literal['patching'], Literal['zero'], Literal['mean'], Literal['mean-positional']]='patching', neuron_level=False, intervention_dataloader: Optional[DataLoader]=None,
+                   give_layers:list=[]):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
@@ -215,14 +216,15 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, neuron_level=False,
+                              node_eval=False, neuron_level=False,
                               run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False,
                               absolute=False, intervention='patching', intervention_dataloader=None):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
-        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode)]
+        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode) \
+                          or isinstance(node, AttentionNode)]
         if neuron_level:
             scores = torch.cat([node.neuron_scores for node in filtered_nodes], dim=-1)
         else:
@@ -234,6 +236,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
     faithfulnesses = []
+    weighted_edge_counts = []
     for pct in percentages:
         this_graph = graph
         if node_eval:
@@ -249,17 +252,15 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
                 print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
                 for node in filtered_nodes:
                     node.in_graph = (node.score >= threshold) if not inverse else (node.score < threshold)
-            weighted_node_count = this_graph.weighted_node_count()
-            weighted_edge_count = this_graph.weighted_edge_count()
-            print(weighted_edge_count)
 
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
             this_graph.apply_greedy(curr_num_items, absolute=absolute)
-            weighted_node_count = this_graph.weighted_node_count()
-            weighted_edge_count = this_graph.weighted_edge_count()
-            print(weighted_edge_count)
+        
+        # weighted_node_count = this_graph.weighted_node_count()
+        weighted_edge_count = this_graph.weighted_edge_count()
+        weighted_edge_counts.append(weighted_edge_count)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, intervention=intervention,
@@ -286,6 +287,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
         area_under += trapezoidal
     average = sum(faithfulnesses) / len(faithfulnesses)
+    print("Weighted edge counts:", weighted_edge_counts)
     return area_under, area_from_100, average, faithfulnesses
 
 
@@ -342,3 +344,74 @@ def evaluate_kl(model: HookedTransformer, inputs, target_inputs):
         results.append(r)
 
     return torch.cat(results)
+
+
+def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):
+    # Track {true, false} {positives, negatives}
+    TP, FP, TN, FN = 0, 0, 0, 0
+    total = 0
+
+    if by_node:
+        ref_objs = reference.nodes
+        hyp_objs = hypothesis.nodes
+    else:
+        ref_objs = reference.edges
+        hyp_objs = hypothesis.edges
+
+    for obj in ref_objs.values():
+        total += 1
+        if obj.name not in hyp_objs:
+            if obj.in_graph:
+                TP += 1
+            else:
+                FP += 1
+            continue
+            
+        if obj.in_graph and hyp_objs[obj.name].in_graph:
+            TP += 1
+        elif obj.in_graph and not hyp_objs[obj.name].in_graph:
+            FN += 1
+        elif not obj.in_graph and hyp_objs[obj.name].in_graph:
+            FP += 1
+        elif not obj.in_graph and not hyp_objs[obj.name].in_graph:
+            TN += 1
+    
+    precision = TP / (TP + FP)
+    recall = TP / (TP + FN)
+    # f1 = (2 * precision * recall) / (precision + recall)
+    TP_rate = recall
+    FP_rate = FP / (FP + TN)
+
+    return {"precision": precision,
+            "recall": recall,
+            "TP_rate": TP_rate,
+            "FP_rate": FP_rate}
+
+def area_under_roc(reference: Graph, hypothesis: Graph, by_node: bool = False):
+    tpr_list = []
+    fpr_list = []
+    precision_list = []
+    recall_list = []
+
+    if by_node:
+        ref_objs = reference.nodes
+        hyp_objs = hypothesis.nodes
+    else:
+        ref_objs = reference.edges
+        hyp_objs = hypothesis.edges
+    
+    num_objs = len(ref_objs.values())
+    for pct in (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1):
+        this_num_objs = pct * num_objs
+        if by_node:
+            raise NotImplementedError("")
+        else:
+            hypothesis.apply_greedy(this_num_objs)
+        scores = compare_graphs(reference, hypothesis)
+        tpr_list.append(scores["TP_rate"])
+        fpr_list.append(scores["FP_rate"])
+        precision_list.append(scores["precision"])
+        recall_list.append(scores["recall"])
+    
+    return {"TPR": tpr_list, "FPR": fpr_list,
+            "precision": precision_list, "recall": recall_list}
