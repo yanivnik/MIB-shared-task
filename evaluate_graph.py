@@ -13,6 +13,76 @@ from attribute import tokenize_plus, make_hooks_and_matrices, compute_mean_activ
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
 
 
+def compute_mean_activations(model: HookedTransformer, graph: Graph, dataloader: DataLoader, per_position=False):
+    """
+    Compute the mean activations of a graph's nodes over a dataset.
+    """
+    def activation_hook(index, activations, hook, means=None, input_lengths=None):
+        # defining a hook that will fill up our means tensor. Means is of shape
+        # (n_pos, graph.n_forward, model.cfg.d_model) if per_position is True, otherwise
+        # (graph.n_forward, model.cfg.d_model)
+        acts = activations.detach()
+
+        # if you gave this hook input lengths, we assume you want to mean over positions
+        if input_lengths is not None:
+            mask = torch.zeros_like(activations)
+            # mask out all padding positions
+            mask[torch.arange(activations.size(0)), input_lengths - 1] = 1
+            
+            # we need ... because there might be a head index as well
+            item_means = einsum(acts, mask, 'batch pos ... hidden, batch pos ... hidden -> batch ... hidden')
+            
+            # mean over the positions we did take, position-wise
+            if len(item_means.size()) == 3:
+                item_means /= input_lengths.unsqueeze(-1).unsqueeze(-1)
+            else:
+                item_means /= input_lengths.unsqueeze(-1)
+
+            means[index] += item_means.sum(0)
+        else:
+            means[:, index] += acts.sum(0)
+
+    # we're going to get all of the out hooks / indices we need for making hooks
+    # but we can't make them until we have input length masks
+    processed_attn_layers = set()
+    hook_points_indices = []
+    for node in graph.nodes.values():
+        if isinstance(node, AttentionNode):
+            if node.layer in processed_attn_layers:
+                continue
+            processed_attn_layers.add(node.layer)
+        
+        if not isinstance(node, LogitNode):
+            hook_points_indices.append((node.out_hook, graph.forward_index(node)))
+
+    means_initialized = False
+    total = 0
+    for batch in tqdm(dataloader, desc='Computing mean'):
+        # maybe the dataset is given as a tuple, maybe its just raw strings
+        batch_inputs = batch[0] if isinstance(batch, tuple) else batch
+        tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, batch_inputs, max_length=512)
+        total += len(batch_inputs)
+
+        if not means_initialized:
+            # here is where we store the means
+            if per_position:
+                means = torch.zeros((n_pos, graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+            else:
+                means = torch.zeros((graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+            means_initialized = True
+
+        if per_position:
+            input_lengths = None
+        add_to_mean_hooks = [(hook_point, partial(activation_hook, index, means=means, input_lengths=input_lengths)) for hook_point, index in hook_points_indices]
+
+        with model.hooks(fwd_hooks=add_to_mean_hooks):
+            model(tokens, attention_mask=attention_mask)
+
+    means = means.squeeze(0)
+    means /= total
+    return means if per_position else means.mean(0)
+
+
 def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], prune:bool=True, quiet=False, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', neuron_level=False, intervention_dataloader: Optional[DataLoader]=None):
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
@@ -146,14 +216,15 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=True, neuron_level=False,
+                              node_eval=False, neuron_level=False,
                               run_corrupted=False, above_curve=False,
                               log_scale=True, inverse=False,
                               absolute=False, intervention='patching', intervention_dataloader=None):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
     if node_eval:
-        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode)]
+        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode) \
+                          or isinstance(node, AttentionNode)]
         if neuron_level:
             scores = torch.cat([node.neuron_scores for node in filtered_nodes], dim=-1)
         else:
@@ -165,6 +236,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
     faithfulnesses = []
+    weighted_edge_counts = []
     for pct in percentages:
         this_graph = graph
         if node_eval:
@@ -184,7 +256,11 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         else:
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_topn(curr_num_items, absolute=absolute)
+            this_graph.apply_greedy(curr_num_items, absolute=absolute)
+        
+        # weighted_node_count = this_graph.weighted_node_count()
+        weighted_edge_count = this_graph.weighted_edge_count()
+        weighted_edge_counts.append(weighted_edge_count)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        prune=prune, quiet=quiet, intervention=intervention,
@@ -211,6 +287,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
         area_under += trapezoidal
     average = sum(faithfulnesses) / len(faithfulnesses)
+    print("Weighted edge counts:", weighted_edge_counts)
     return area_under, area_from_100, average, faithfulnesses
 
 
@@ -267,3 +344,74 @@ def evaluate_kl(model: HookedTransformer, inputs, target_inputs):
         results.append(r)
 
     return torch.cat(results)
+
+
+def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):
+    # Track {true, false} {positives, negatives}
+    TP, FP, TN, FN = 0, 0, 0, 0
+    total = 0
+
+    if by_node:
+        ref_objs = reference.nodes
+        hyp_objs = hypothesis.nodes
+    else:
+        ref_objs = reference.edges
+        hyp_objs = hypothesis.edges
+
+    for obj in ref_objs.values():
+        total += 1
+        if obj.name not in hyp_objs:
+            if obj.in_graph:
+                TP += 1
+            else:
+                FP += 1
+            continue
+            
+        if obj.in_graph and hyp_objs[obj.name].in_graph:
+            TP += 1
+        elif obj.in_graph and not hyp_objs[obj.name].in_graph:
+            FN += 1
+        elif not obj.in_graph and hyp_objs[obj.name].in_graph:
+            FP += 1
+        elif not obj.in_graph and not hyp_objs[obj.name].in_graph:
+            TN += 1
+    
+    precision = TP / (TP + FP)
+    recall = TP / (TP + FN)
+    # f1 = (2 * precision * recall) / (precision + recall)
+    TP_rate = recall
+    FP_rate = FP / (FP + TN)
+
+    return {"precision": precision,
+            "recall": recall,
+            "TP_rate": TP_rate,
+            "FP_rate": FP_rate}
+
+def area_under_roc(reference: Graph, hypothesis: Graph, by_node: bool = False):
+    tpr_list = []
+    fpr_list = []
+    precision_list = []
+    recall_list = []
+
+    if by_node:
+        ref_objs = reference.nodes
+        hyp_objs = hypothesis.nodes
+    else:
+        ref_objs = reference.edges
+        hyp_objs = hypothesis.edges
+    
+    num_objs = len(ref_objs.values())
+    for pct in (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1):
+        this_num_objs = pct * num_objs
+        if by_node:
+            raise NotImplementedError("")
+        else:
+            hypothesis.apply_greedy(this_num_objs)
+        scores = compare_graphs(reference, hypothesis)
+        tpr_list.append(scores["TP_rate"])
+        fpr_list.append(scores["FP_rate"])
+        precision_list.append(scores["precision"])
+        recall_list.append(scores["recall"])
+    
+    return {"TPR": tpr_list, "FPR": fpr_list,
+            "precision": precision_list, "recall": recall_list}
