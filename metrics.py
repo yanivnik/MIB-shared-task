@@ -143,8 +143,8 @@ def logit_diff_greater_than(circuit_logits: torch.Tensor, clean_logits: torch.Te
     # Prob diff (negative, since it's a loss)
     circuit_logits = get_logit_positions(circuit_logits, input_length)
     circuit_outputs = torch.softmax(circuit_logits, dim=-1) if prob else circuit_logits
-    print(circuit_outputs)
-    print(circuit_outputs[:, tuple(year_indices)])
+    # print(circuit_outputs)
+    # print(circuit_outputs[:, tuple(year_indices)])
     circuit_outputs = circuit_outputs[:, year_indices]
 
     results = []
