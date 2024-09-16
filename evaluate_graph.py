@@ -186,9 +186,10 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
             this_graph.apply_greedy(curr_num_items, absolute=absolute)
-            this_graph.prune_dead_nodes()
         
         # weighted_node_count = this_graph.weighted_node_count()
+        # We need to prune before counting, as pruning can remove edges
+        this_graph.prune_dead_nodes()
         weighted_edge_count = this_graph.weighted_edge_count()
         weighted_edge_counts.append(weighted_edge_count)
 
