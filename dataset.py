@@ -1,3 +1,5 @@
+from typing import Optional
+
 from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset
 import pandas as pd
@@ -9,7 +11,7 @@ def collate_EAP(xs):
     return clean, corrupted, labels
 
 class EAPDataset(Dataset):
-    def __init__(self, filepath, task='greater-than'):
+    def __init__(self, filepath:str, task:str='greater-than'):
         self.task = task
         self.df = pd.read_csv(filepath)
 
@@ -35,12 +37,12 @@ class EAPDataset(Dataset):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)
     
 class HFEAPDataset(Dataset):
-    def __init__(self, url, tokenizer, split="train", task='ioi', num_examples=None):
+    def __init__(self, url:str, tokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None):
         self.task = task
         self.tokenizer = tokenizer
         self.dataset = load_dataset(url, split=split)
         self.dataset = self.filter_dataset()
-        self.dataset = self.shuffle()
+        #self.dataset = self.shuffle()
         if num_examples:
             self.dataset = self.head(num_examples)
 
@@ -56,8 +58,8 @@ class HFEAPDataset(Dataset):
     def filter_dataset(self):
         if self.task == 'ioi':
             filtered_dataset = self.dataset.filter(
-                lambda x: len(self.tokenizer(f" {x['metadata']['IO']}", add_special_tokens=False).input_ids) == 1 and \
-                          len(self.tokenizer(f" {x['metadata']['S']}", add_special_tokens=False).input_ids) == 1
+                lambda x: len(self.tokenizer(f" {x['metadata']['indirect_object']}", add_special_tokens=False).input_ids) == 
+                          len(self.tokenizer(f" {x['metadata']['subject']}", add_special_tokens=False).input_ids)
             )
             return filtered_dataset
         else:
@@ -66,13 +68,9 @@ class HFEAPDataset(Dataset):
     def __getitem__(self, index):
         row = self.dataset[index]
         if self.task == 'ioi':
-            clean_prompt = " ".join(row["text"].split()[:-1])
-            IO, S = row['metadata']["IO"], row['metadata']["S"]
-            prompt_parts = clean_prompt.split(S)
-            corrupted_prompt = f"{S.join(prompt_parts[:-1])}{IO}{prompt_parts[-1]}"
-            correct_idx = self.tokenizer(f" {row['metadata']['IO']}", add_special_tokens=False).input_ids[0]
-            incorrect_idx = self.tokenizer(f" {row['metadata']['S']}", add_special_tokens=False).input_ids[0]
-            return clean_prompt, corrupted_prompt, [correct_idx, incorrect_idx]
+            correct_idx = self.tokenizer(f" {row['metadata']['indirect_object']}", add_special_tokens=False).input_ids[0]
+            incorrect_idx = self.tokenizer(f" {row['metadata']['subject']}", add_special_tokens=False).input_ids[0]
+            return row['text'], row['couterfactuals']['s1_ioi_flip_s2_ioi_flip_cf'], [correct_idx, incorrect_idx]
     
     def to_dataloader(self, batch_size: int):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)

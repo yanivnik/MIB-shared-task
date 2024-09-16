@@ -17,6 +17,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     """
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
+    assert model.cfg.use_attn_result, "Model must be configured to use attention result (model.cfg.use_attn_result)"
     assert intervention in ['patching', 'zero', 'mean', 'mean-positional'], f"Invalid intervention: {intervention}"
     
     if 'mean' in intervention:
@@ -146,9 +147,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=False, neuron_level=False,
-                              run_corrupted=False, above_curve=False,
-                              log_scale=True, inverse=False,
+                              node_eval=False, neuron_level=False, run_corrupted=False, log_scale=True, inverse=False,
                               absolute=False, intervention='patching', intervention_dataloader=None):
     baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
     
@@ -187,6 +186,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
             curr_num_items = int(pct * len(graph.edges))
             print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
             this_graph.apply_greedy(curr_num_items, absolute=absolute)
+            this_graph.prune_dead_nodes()
         
         # weighted_node_count = this_graph.weighted_node_count()
         weighted_edge_count = this_graph.weighted_edge_count()
