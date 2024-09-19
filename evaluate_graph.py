@@ -18,6 +18,9 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
     """
     assert model.cfg.use_attn_result, "Model must be configured to use attention result (model.cfg.use_attn_result)"
+    if model.cfg.n_key_value_heads is not None:
+        assert model.cfg.ungroup_grouped_query_attention, "Model must be configured to ungroup grouped attention (model.cfg.ungroup_grouped_attention)"
+        
     assert intervention in ['patching', 'zero', 'mean', 'mean-positional'], f"Invalid intervention: {intervention}"
     
     if 'mean' in intervention:
