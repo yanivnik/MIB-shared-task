@@ -59,43 +59,43 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
     # For each node in the graph, corrupt its inputs, if the corresponding edge isn't in the graph 
     # We corrupt it by adding in the activation difference (b/w clean and corrupted acts)
-    def make_input_construction_hook(act_index, activation_differences, in_graph_vector, neuron_matrix):
+    def make_input_construction_hook(activation_differences, in_graph_vector, neuron_matrix):
         def input_construction_hook(activations, hook):
+            # The ... here is to account for a potential head dimension, when constructing a whole attention layer's input
             if neuron_matrix is not None:
-                update = einsum(activation_differences[:, :, :len(in_graph_vector)], neuron_matrix[:len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous hidden, previous -> batch pos hidden')
+                update = einsum(activation_differences[:, :, :len(in_graph_vector)], neuron_matrix[:len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous hidden, previous ... -> batch pos ... hidden')
             else:
-                update = einsum(activation_differences[:, :, :len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous -> batch pos hidden')
-            activations[act_index] += update
+                update = einsum(activation_differences[:, :, :len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous ... -> batch pos ... hidden')
+            activations += update
             return activations
         return input_construction_hook
 
     def make_input_construction_hooks(activation_differences, in_graph_matrix, neuron_matrix):
         input_construction_hooks = []
-        for node in graph.nodes.values():
-            if isinstance(node, InputNode) or not node.in_graph:
-                pass
-            elif isinstance(node, LogitNode) or isinstance(node, MLPNode):
-                fwd_index = graph.prev_index(node)
-                bwd_index = graph.backward_index(node)
-                input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
-                input_construction_hooks.append((node.in_hook, input_cons_hook))
-            elif isinstance(node, AttentionNode):
+        for layer in range(model.cfg.n_layers):
+            # If any attention node in the layer is in the graph, just construct the input for the entire layer
+            if any(graph.nodes[f'a{layer}.h{head}'].in_graph for head in range(model.cfg.n_heads)):
                 for i, letter in enumerate('qkv'):
-                    fwd_index = graph.prev_index(node)
-                    bwd_index = graph.backward_index(node, qkv=letter, attn_slice=False)
-                    input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
+                    node = graph.nodes[f'a{layer}.h0']
+                    prev_index = graph.prev_index(node)
+                    bwd_index = graph.backward_index(node, qkv=letter, attn_slice=True)
+                    input_cons_hook = make_input_construction_hook(activation_differences, in_graph_matrix[:prev_index, bwd_index], neuron_matrix)
                     input_construction_hooks.append((node.qkv_inputs[i], input_cons_hook))
-            else:
-                raise ValueError(f"Invalid node: {node} of type {type(node)}")
-
-        # If there are no nodes in the graph, we need to add a hook to the logits node
-        # This will construct its input as all corrupted / ablated, based on the ablation chosen
-        if len(input_construction_hooks) == 0:
-            node = graph.nodes['logits']
-            fwd_index = graph.prev_index(node)
-            bwd_index = graph.backward_index(node)
-            input_cons_hook = make_input_construction_hook(node.index, activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
-            input_construction_hooks = [(node.in_hook, input_cons_hook)]
+                    
+            # add MLP hook if MLP in graph
+            if graph.nodes[f'm{layer}'].in_graph:
+                node = graph.nodes[f'm{layer}']
+                prev_index = graph.prev_index(node)
+                bwd_index = graph.backward_index(node)
+                input_cons_hook = make_input_construction_hook(activation_differences, in_graph_matrix[:prev_index, bwd_index], neuron_matrix)
+                input_construction_hooks.append((node.in_hook, input_cons_hook))
+                    
+        # Always add the logits hook
+        node = graph.nodes['logits']
+        fwd_index = graph.prev_index(node)
+        bwd_index = graph.backward_index(node)
+        input_cons_hook = make_input_construction_hook(activation_differences, in_graph_matrix[:fwd_index, bwd_index], neuron_matrix)
+        input_construction_hooks.append((node.in_hook, input_cons_hook))
 
         return input_construction_hooks
     
@@ -121,7 +121,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
             if intervention == 'patching':
                 # We intervene by subtracting out clean and adding in corrupted activations
                 with model.hooks(fwd_hooks_corrupted):
-                    _ = model(corrupted_tokens, attention_mask=attention_mask)
+                    corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
             else:
                 # In the case of zero or mean ablation, we skip the adding in corrupted activations
                 # but in mean ablations, we need to add the mean in
@@ -230,11 +230,11 @@ def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: 
     
     results = [[] for _ in metrics]
     for clean, corrupted, label in tqdm(dataloader):
-        tokenized = model.tokenizer(clean, padding='longest', return_tensors='pt', add_special_tokens=True)
-        input_lengths = 1 + tokenized.attention_mask.sum(1)
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
         with torch.inference_mode():
-            corrupted_logits = model(corrupted)
-            logits = model(clean)
+            corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            logits = model(clean_tokens, attention_mask=attention_mask)
         for i, metric in enumerate(metrics):
             if run_corrupted:
                 r = metric(corrupted_logits, logits, input_lengths, label).cpu()
@@ -248,33 +248,6 @@ def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: 
     if not metrics_list:
         results = results[0]
     return results
-
-def evaluate_kl(model: HookedTransformer, inputs, target_inputs):
-    results = []
-    for inp, target in tqdm(zip(inputs, target_inputs), total=len(inputs)):
-        
-        batch_size = len(inp)
-        tokenized = model.tokenizer(inp, padding='longest', return_tensors='pt', add_special_tokens=True)
-        input_length = 1 + tokenized.attention_mask.sum(1)
-        
-        with torch.inference_mode():
-            target_logits = model(target)
-            logits = model(inp)
-
-        idx = torch.arange(batch_size, device=logits.device)
-
-        logits = logits[idx, input_length - 1]
-        target_logits = target_logits[idx, input_length - 1]
-
-        logprobs = torch.log_softmax(logits, dim=-1)
-        target_logprobs = torch.log_softmax(target_logits, dim=-1)
-
-        r = torch.nn.functional.kl_div(logprobs, target_logprobs, log_target=True, reduction='mean')
-        if len(r.size()) == 0:
-            r = r.unsqueeze(0)
-        results.append(r)
-
-    return torch.cat(results)
 
 
 def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):

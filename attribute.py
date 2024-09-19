@@ -89,6 +89,7 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
             scores[:fwd_index, bwd_index] += s
         except RuntimeError as e:
             print(hook.name, activation_difference.size(), activation_difference.device, grads.size(), grads.device)
+            print(fwd_index, bwd_index, scores.size(), s.size())
             raise e
 
     for name, node in graph.nodes.items():
