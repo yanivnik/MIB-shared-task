@@ -37,7 +37,7 @@ def tokenize_plus(model: HookedTransformer, inputs: List[str], max_length: Optio
     n_pos = attention_mask.size(1)
     return tokens, attention_mask, input_lengths, n_pos
 
-def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:int , n_pos:int, scores: Tensor):
+def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:int , n_pos:int, scores: Optional[Tensor]):
     """Makes a matrix, and hooks to fill it and the score matrix up
 
     Args:
@@ -45,26 +45,41 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
         graph (Graph): graph to attribute
         batch_size (int): size of the particular batch you're attributing
         n_pos (int): size of the position dimension
-        scores (Tensor): The scores tensor you intend to fill
+        scores (Tensor): The scores tensor you intend to fill. If you pass in None, we assume that you're using these hooks / matrices for evaluation only (so don't use the backwards hooks!)
 
     Returns:
         Tuple[Tuple[List, List, List], Tensor]: The final tensor ([batch, pos, n_src_nodes, d_model]) stores activation differences, i.e. corrupted - clean activations. The first set of hooks will add in the activations they are run on (run these on corrupted input), while the second set will subtract out the activations they are run on (run these on clean input). The third set of hooks will compute the gradients and update the scores matrix that you passed in. 
     """
-    activation_difference = torch.zeros((batch_size, n_pos, graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+    separate_activations = model.cfg.use_normalization_before_and_after and scores is None
+    if separate_activations:
+        activation_difference = torch.zeros((2, batch_size, n_pos, graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
+    else:
+        activation_difference = torch.zeros((batch_size, n_pos, graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
 
     processed_attn_layers = set()
     fwd_hooks_clean = []
     fwd_hooks_corrupted = []
     bwd_hooks = []
-    
-    def activation_hook(index, activations, hook, add: bool = True):
+        
+    # Fills up the activation difference matrix. In the default case (not separate_activations), 
+    # we add in the corrupted activations (add = True) and subtract out the clean ones (add=False)
+    # In the separate_activations case, we just store them in two halves of the matrix. Less efficient, 
+    # but necessary for models with Gemma's architecture.
+    def activation_hook(index, activations, hook, add:bool=True):
         acts = activations.detach()
-        if not add:
-            acts = -acts
         try:
-            activation_difference[:, :, index] += acts
+            if separate_activations:
+                if add:
+                    activation_difference[0, :, :, index] += acts
+                else:
+                    activation_difference[1, :, :, index] += acts
+            else:
+                if add:
+                    activation_difference[:, :, index] += acts
+                else:
+                    activation_difference[:, :, index] -= acts
         except RuntimeError as e:
-            print(hook.name, activation_difference[:, :, index].size(), activation_difference.device, acts.size(), acts.device)
+            print(hook.name, activation_difference[:, :, index].size(), acts.size())
             raise e
     
     def gradient_hook(fwd_index: Union[slice, int], bwd_index: Union[slice, int], gradients:torch.Tensor, hook):
