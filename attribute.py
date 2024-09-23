@@ -391,8 +391,59 @@ def get_scores_ig_activations(model: HookedTransformer, graph: Graph, dataloader
 
     return scores
 
+
+def get_scores_clean_corrupted(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metric: Callable[[Tensor], Tensor], quiet=False):
+    """Gets scores using the clean-corrupted method: like EAP-IG, but just do it on the clean and corrupted inputs, instead of all the intermediate steps.
+
+    Args:
+        model (HookedTransformer): the model to attribute
+        graph (Graph): the graph to attribute
+        dataloader (DataLoader): the data over which to attribute
+        metric (Callable[[Tensor], Tensor]): the metric to attribute with respect to
+        quiet (bool, optional): whether to silence tqdm. Defaults to False.
+
+    Returns:
+        _type_: _description_
+    """
+    scores = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)    
+    
+    total_items = 0
+    dataloader = dataloader if quiet else tqdm(dataloader)
+    for clean, corrupted, label in dataloader:
+        batch_size = len(clean)
+        total_items += batch_size
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
+
+        (fwd_hooks_corrupted, fwd_hooks_clean, bwd_hooks), activation_difference = make_hooks_and_matrices(model, graph, batch_size, n_pos, scores)
+
+        with torch.inference_mode():
+            with model.hooks(fwd_hooks=fwd_hooks_corrupted):
+                _ = model(corrupted_tokens, attention_mask=attention_mask)
+
+            with model.hooks(fwd_hooks=fwd_hooks_clean):
+                clean_logits = model(clean_tokens, attention_mask=attention_mask)
+
+
+        total_steps = 2
+        with model.hooks(bwd_hooks=bwd_hooks):
+            logits = model(clean_tokens, attention_mask=attention_mask)
+            metric_value = metric(logits, clean_logits, input_lengths, label)
+            metric_value.backward()
+            model.zero_grad()
+
+            corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            corrupted_metric_value = metric(corrupted_logits, clean_logits, input_lengths, label)
+            corrupted_metric_value.backward()
+            model.zero_grad()
+
+    scores /= total_items
+    scores /= total_steps
+
+    return scores
+
 allowed_aggregations = {'sum', 'mean'}#, 'l2'}        
-def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metric: Callable[[Tensor], Tensor], method: Literal['EAP', 'EAP-IG-inputs', 'EAP-IG-activations'], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', aggregation='sum', ig_steps: Optional[int]=None, intervention_dataloader: Optional[DataLoader]=None, quiet=False):
+def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metric: Callable[[Tensor], Tensor], method: Literal['EAP', 'EAP-IG-inputs', 'clean-corrupted', 'EAP-IG-activations'], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', aggregation='sum', ig_steps: Optional[int]=None, intervention_dataloader: Optional[DataLoader]=None, quiet=False):
     assert model.cfg.use_attn_result, "Model must be configured to use attention result (model.cfg.use_attn_result)"
     assert model.cfg.use_split_qkv_input, "Model must be configured to use split qkv inputs (model.cfg.use_split_qkv_input)"
     assert model.cfg.use_hook_mlp_in, "Model must be configured to use hook MLP in (model.cfg.use_hook_mlp_in)"
@@ -410,6 +461,10 @@ def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, me
         if intervention != 'patching':
             raise ValueError(f"intervention must be 'patching' for EAP-IG-inputs, but got {intervention}")
         scores = get_scores_eap_ig(model, graph, dataloader, metric, steps=ig_steps, quiet=quiet)
+    elif method == 'clean-corrupted':
+        if intervention != 'patching':
+            raise ValueError(f"intervention must be 'patching' for clean-corrupted, but got {intervention}")
+        scores = get_scores_clean_corrupted(model, graph, dataloader, metric, quiet=quiet)
     elif method == 'EAP-IG-activations':
         scores = get_scores_ig_activations(model, graph, dataloader, metric, steps=ig_steps, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=quiet)
     else:

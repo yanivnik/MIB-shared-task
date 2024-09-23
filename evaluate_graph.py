@@ -13,9 +13,20 @@ from attribute import tokenize_plus, make_hooks_and_matrices, compute_mean_activ
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], prune:bool=True, quiet=False, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', neuron_level=False, intervention_dataloader: Optional[DataLoader]=None):
-    """
-    Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], quiet=False, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None) -> Union[torch.Tensor, List[torch.Tensor]]:
+    """Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
+
+    Args:
+        model (HookedTransformer): The model to run the circuit on 
+        graph (Graph): The circuit to evaluate
+        dataloader (DataLoader): The dataset to evaluate on
+        metrics (Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]]): The metric(s) to evaluate with respect to
+        quiet (bool, optional): Whether to silence the tqdm progress bar. Defaults to False.
+        intervention (Literal[&#39;patching&#39;, &#39;zero&#39;, &#39;mean&#39;,&#39;mean, optional): Which ablation to evaluate with respect to. 'patching' is an interchange intervention; mean-positional takes the positional mean over the given dataset. Defaults to 'patching'.
+        intervention_dataloader (Optional[DataLoader], optional): The dataset to take the mean over. Must be set if intervention is mean or mean-positional. Defaults to None.
+
+    Returns:
+        Union[torch.Tensor, List[torch.Tensor]]: A tensor (or list thereof) of faithfulness scores; if a list, each list entry corresponds to a metric in the input list
     """
     assert model.cfg.use_attn_result, "Model must be configured to use attention result (model.cfg.use_attn_result)"
     if model.cfg.n_key_value_heads is not None:
@@ -31,14 +42,14 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         if not per_position:
             means = means.unsqueeze(0)
 
-    if prune:
-        graph.prune()
+    # This step cleans up the graph, removing components until it's fully connected
+    graph.prune()
 
     # Construct a matrix that indicates which edges are in the graph
     in_graph_matrix = graph.in_graph.to(device=model.cfg.device, dtype=model.cfg.dtype)
     
     # same thing but for neurons
-    if neuron_level:
+    if graph.neurons_in_graph is not None:
         neuron_matrix = graph.neurons_in_graph.to(device=model.cfg.device, dtype=model.cfg.dtype)
 
         # If an edge is in the graph, but not all its neurons are, we need to update that edge anyway
@@ -47,10 +58,10 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     else:
         neuron_matrix = None
 
-    # We take the opposite matrix, because we'll use at as a mask to specify 
+    # We take the opposite matrix, because we'll use it as a mask to specify 
     # which edges we want to corrupt
     in_graph_matrix = 1 - in_graph_matrix
-    if neuron_level:
+    if neuron_matrix is not None:
         neuron_matrix = 1 - neuron_matrix
         
     if model.cfg.use_normalization_before_and_after:
@@ -150,13 +161,12 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
 
         return input_construction_hooks
     
-    # and here we actually run / evaluate the model
-    metrics_list = True
+    # convert metrics to list if it's not already
     if not isinstance(metrics, list):
         metrics = [metrics]
-        metrics_list = False
     results = [[] for _ in metrics]
     
+    # and here we actually run / evaluate the model
     dataloader = dataloader if quiet else tqdm(dataloader)
     for clean, corrupted, label in dataloader:
         clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
@@ -192,26 +202,62 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
             results[i].append(r)
 
     results = [torch.cat(rs) for rs in results]
-    if not metrics_list:
+    # unwrap the results if there's only one metric
+    if len(results) == 1:
         results = results[0]
     return results
 
 
-def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, prune=True, quiet=False,
-                              node_eval=False, neuron_level=False, run_corrupted=False, log_scale=True, inverse=False,
-                              absolute=False, intervention='patching', intervention_dataloader=None):
-    baseline_score = evaluate_baseline(model, dataloader, metrics, run_corrupted=run_corrupted).mean().item()
+def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: List[Callable[[Tensor], Tensor]], run_corrupted=False) -> Union[torch.Tensor, List[torch.Tensor]]:
+    """Evaluates the model on the given dataloader, without any intervention. This is useful for computing the baseline performance of the model.
+
+    Args:
+        model (HookedTransformer): The model to evaluate
+        dataloader (DataLoader): The dataset to evaluate on
+        metrics (List[Callable[[Tensor], Tensor]]): The metrics to evaluate with respect to
+        run_corrupted (bool, optional): Whether to evaluate on corrupted examples instead. Defaults to False.
+
+    Returns:
+        Union[torch.Tensor, List[torch.Tensor]]: A tensor (or list thereof) of performance scores; if a list, each list entry corresponds to a metric in the input list
+    """
+    if not isinstance(metrics, list):
+        metrics = [metrics]
     
-    if node_eval:
-        filtered_nodes = [node for node in graph.nodes.values() if isinstance(node, MLPNode) \
-                          or isinstance(node, AttentionNode)]
-        if neuron_level:
-            scores = torch.cat([node.neuron_scores for node in filtered_nodes], dim=-1)
-        else:
-            scores = torch.tensor([node.score for node in filtered_nodes])
-        if absolute:
-                scores = scores.abs()
-        sorted_scores = scores.sort(descending=True).values
+    results = [[] for _ in metrics]
+    for clean, corrupted, label in tqdm(dataloader):
+        clean_tokens, attention_mask, input_lengths, _ = tokenize_plus(model, clean)
+        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
+        with torch.inference_mode():
+            corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
+            logits = model(clean_tokens, attention_mask=attention_mask)
+        for i, metric in enumerate(metrics):
+            if run_corrupted:
+                r = metric(corrupted_logits, logits, input_lengths, label).cpu()
+            else:
+                r = metric(logits, corrupted_logits, input_lengths, label).cpu()
+            if len(r.size()) == 0:
+                r = r.unsqueeze(0)
+            results[i].append(r)
+
+    results = [torch.cat(rs) for rs in results]
+    if len(results) == 1:
+        results = results[0]
+    return results
+
+
+def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
+                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None):
+    baseline_score = evaluate_baseline(model, dataloader, metrics).mean().item()
+    corrupted_score = evaluate_graph(model, graph, dataloader, metrics, quiet=quiet, intervention=intervention, intervention_dataloader=intervention_dataloader).mean().item()
+    
+    if level == 'neuron':
+        assert graph.neurons_scores is not None, "Neuron scores must be present for neuron-level evaluation"
+        n_scored_items = (~torch.isnan(graph.neurons_scores)).sum().item()
+    elif level == 'node':
+        assert graph.nodes_scores is not None, "Node scores must be present for node-level evaluation"
+        n_scored_items = (~torch.isnan(graph.nodes_scores)).sum().item()
+    else:
+        n_scored_items = len(graph.edges)
     
     percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
 
@@ -219,35 +265,18 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     weighted_edge_counts = []
     for pct in percentages:
         this_graph = graph
-        if node_eval:
-            curr_num_items = int(pct * len(sorted_scores))
-            threshold = sorted_scores[curr_num_items - 1].item()
-
-            if neuron_level:
-                print(f"Computing results for {pct*100}% of neurons (N={curr_num_items})")
-                for node in filtered_nodes:
-                    node.neurons = (node.neuron_scores >= threshold) if not inverse else (node.neuron_scores < threshold)
-                    node.in_graph = torch.any(node.neurons)
-            else:
-                print(f"Computing results for {pct*100}% of nodes (N={curr_num_items})")
-                for node in filtered_nodes:
-                    node.in_graph = (node.score >= threshold) if not inverse else (node.score < threshold)
-
-        else:
-            curr_num_items = int(pct * len(graph.edges))
-            print(f"Computing results for {pct*100}% of edges (N={curr_num_items})")
-            this_graph.apply_greedy(curr_num_items, absolute=absolute)
+        curr_num_items = int(pct * n_scored_items)
+        print(f"Computing results for {pct*100}% of {level}s (N={curr_num_items})")
+        this_graph.apply_topn(curr_num_items, absolute=absolute, level=level)
         
-        # weighted_node_count = this_graph.weighted_node_count()
         # We need to prune before counting, as pruning can remove edges
-        this_graph.prune_dead_nodes()
+        this_graph.prune()
         weighted_edge_count = this_graph.weighted_edge_count()
         weighted_edge_counts.append(weighted_edge_count)
 
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
-                                       prune=prune, quiet=quiet, intervention=intervention,
-                                       intervention_dataloader=intervention_dataloader, 
-                                       neuron_level=neuron_level).mean().item()
+                                       quiet=quiet, intervention=intervention,
+                                       intervention_dataloader=intervention_dataloader).mean().item()
         faithfulness = ablated_score / baseline_score
         print(faithfulness)
         faithfulnesses.append(faithfulness)
@@ -271,34 +300,6 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     average = sum(faithfulnesses) / len(faithfulnesses)
     print("Weighted edge counts:", weighted_edge_counts)
     return area_under, area_from_100, average, faithfulnesses
-
-
-def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: List[Callable[[Tensor], Tensor]], run_corrupted=False):
-    metrics_list = True
-    if not isinstance(metrics, list):
-        metrics = [metrics]
-        metrics_list = False
-    
-    results = [[] for _ in metrics]
-    for clean, corrupted, label in tqdm(dataloader):
-        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
-        corrupted_tokens, _, _, _ = tokenize_plus(model, corrupted)
-        with torch.inference_mode():
-            corrupted_logits = model(corrupted_tokens, attention_mask=attention_mask)
-            logits = model(clean_tokens, attention_mask=attention_mask)
-        for i, metric in enumerate(metrics):
-            if run_corrupted:
-                r = metric(corrupted_logits, logits, input_lengths, label).cpu()
-            else:
-                r = metric(logits, corrupted_logits, input_lengths, label).cpu()
-            if len(r.size()) == 0:
-                r = r.unsqueeze(0)
-            results[i].append(r)
-
-    results = [torch.cat(rs) for rs in results]
-    if not metrics_list:
-        results = results[0]
-    return results
 
 
 def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):

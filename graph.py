@@ -181,15 +181,15 @@ class GraphConfig(dict):
         self.__dict__ = self
 
 class Graph:
-    nodes: Dict[str, Node]
-    edges: Dict[str, Edge]
+    nodes: Dict[str, Node]  # Maps from node names ('input', 'a0.h0', 'm0', 'logits', etc.) to Node objects
+    edges: Dict[str, Edge]  # Maps from edge names ('input->a0.h0', 'a0.h0->m0', etc.) to Edge objects. Attn edges are denoted as 'input->a0.h0<q>', 'input->a0.h0<k>', 'input->a0.h0<v>'
     n_forward: int  # the number of forward (source) nodes
     n_backward: int  # the number of backward (destination) nodes
     scores: torch.Tensor  # (n_forward, n_backward) tensor of edge scores
     in_graph: torch.Tensor  # (n_forward, n_backward) tensor of whether the edge is in the graph
-    neurons_scores: Optional[torch.Tensor]  # (n_forward, d_model) tensor of neuron scores for each forward node
+    neurons_scores: Optional[torch.Tensor]  # (n_forward, d_model) tensor of neuron scores for each forward node. If a neuron's score is NaN, this indicates it has not been scored, and needs to stay in the graph.
     neurons_in_graph: Optional[torch.Tensor]  # (n_forward, d_model) tensor of whether the neuron is in the graph
-    nodes_scores: Optional[torch.Tensor]  # (n_forward) tensor of source node scores
+    nodes_scores: Optional[torch.Tensor]  # (n_forward) tensor of source node scores. If None, nodes have no scores. If a node's score is NaN, this indicates it has not been scored, and needs to stay in the graph.
     nodes_in_graph: torch.Tensor  # (n_forward) tensor of whether the (source) node is in the graph
     forward_to_backward: torch.Tensor
     real_edge_mask: torch.Tensor   # (n_forward, n_backward) tensor of whether the edge is real (some edges are not real, e.g. m10->m2)
@@ -203,6 +203,7 @@ class Graph:
 
     def add_edge(self, parent:Node, child:Node, qkv:Optional[Literal["q", "k", "v"]]=None):
         edge = Edge(self, parent, child, qkv)
+        self.real_edge_mask[edge.matrix_index] = True
         self.edges[edge.name] = edge
         parent.children.add(child)
         parent.child_edges.add(edge)
@@ -233,11 +234,11 @@ class Graph:
             raise ValueError(f"Invalid node: {node} of type {type(node)}")
         
     @classmethod
-    def _n_forward(cls, cfg):
+    def _n_forward(cls, cfg) -> int:
         return 1 + cfg.n_layers * (cfg.n_heads + 1)
     
     @classmethod
-    def _n_backward(cls, cfg):
+    def _n_backward(cls, cfg) -> int:
         return cfg.n_layers * (3 * cfg.n_heads + 1) + 1
         
     @classmethod
@@ -304,7 +305,7 @@ class Graph:
     def backward_index(self, node:Node, qkv=None, attn_slice=True) -> int:
         return Graph._backward_index(self.cfg, node.name, qkv, attn_slice)
         
-    def get_dst_nodes(self):
+    def get_dst_nodes(self) -> List[str]:
         heads = []
         for layer in range(self.cfg['n_layers']):
             for letter in 'qkv':
@@ -321,15 +322,15 @@ class Graph:
             float: weighted edge count
         """
         if self.neurons_in_graph is not None:
-            return einsum(self.in_graph.float(), self.neurons_in_graph.float(), 'forward backward, forward d_model ->') / self.cfg['d_model']
+            return (einsum(self.in_graph.float(), self.neurons_in_graph.float(), 'forward backward, forward d_model ->') / self.cfg['d_model']).item()
         else:
-            return self.count_included_edges()
+            return float(self.count_included_edges())
 
-    def count_included_edges(self):
-        return self.in_graph.sum()
+    def count_included_edges(self) -> int:
+        return self.in_graph.sum().item()
     
-    def count_included_nodes(self):
-        return self.nodes_in_graph.sum()
+    def count_included_nodes(self) -> int:
+        return self.nodes_in_graph.sum().item()
     
     def reset(self, empty=True):
         """Resets the graph, setting everything to zero. If empty is False, sets everything to True instead.
