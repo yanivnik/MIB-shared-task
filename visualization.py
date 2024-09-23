@@ -1,3 +1,5 @@
+from typing import Optional, Literal
+
 import numpy as np
 import cmapy
 
@@ -9,6 +11,13 @@ EDGE_TYPE_COLORS = {
     None: "#000000", # Black
 }
 
+def get_color(qkv: Optional[Literal['q','k','v']], score:float):
+    if qkv is not None:
+        return EDGE_TYPE_COLORS[qkv]
+    elif score < 0:
+        return "#FF0000"
+    else:
+        return "#000000"
 
 def rgb2hex(rgb):
     """

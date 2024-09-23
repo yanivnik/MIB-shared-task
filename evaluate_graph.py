@@ -32,20 +32,14 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
             means = means.unsqueeze(0)
 
     if prune:
-        graph.prune_dead_nodes()
+        graph.prune()
 
     # Construct a matrix that indicates which edges are in the graph
-    in_graph_matrix = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)
-    for edge in graph.edges.values():
-        if edge.in_graph:
-            in_graph_matrix[graph.forward_index(edge.parent, attn_slice=False), graph.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = 1
+    in_graph_matrix = graph.in_graph.to(device=model.cfg.device, dtype=model.cfg.dtype)
     
     # same thing but for neurons
     if neuron_level:
-        neuron_matrix = torch.ones((graph.n_forward, model.cfg.d_model), device='cuda', dtype=model.cfg.dtype)
-        for node in graph.nodes.values():
-            if node.neurons is not None:
-                neuron_matrix[graph.forward_index(node, attn_slice=False)] = node.neurons
+        neuron_matrix = graph.neurons_in_graph.to(device=model.cfg.device, dtype=model.cfg.dtype)
 
         # If an edge is in the graph, but not all its neurons are, we need to update that edge anyway
         node_fully_in_graph = (neuron_matrix.sum(-1) == model.cfg.d_model).to(model.cfg.dtype)

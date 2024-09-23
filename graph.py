@@ -1,15 +1,14 @@
 from typing import List, Dict, Union, Tuple, Literal, Optional, Set
-from collections import defaultdict
-from pathlib import Path 
 import json
 import heapq
 
+from einops import einsum
 import torch
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 import numpy as np
 import pygraphviz as pgv
 
-from visualization import EDGE_TYPE_COLORS, generate_random_color
+from visualization import get_color, generate_random_color
 
 class Node:
     """
@@ -27,61 +26,108 @@ class Node:
     child_edges: Set['Edge']
     in_graph: bool
     score: Optional[float]
-    neuron_scores: Optional[torch.Tensor]
+    neurons: Optional[torch.Tensor]
+    neurons_scores: Optional[torch.Tensor]
     qkv_inputs: Optional[List[str]]
 
-    def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple,
-                 score: Optional[float]=None, qkv_inputs: Optional[List[str]]=None, neurons: Optional[torch.Tensor]=None,
-                 neuron_scores: Optional[torch.Tensor]=None):
+    def __init__(self, name: str, layer:int, in_hook: List[str], out_hook: str, index: Tuple, 
+                 graph:'Graph', qkv_inputs: Optional[List[str]]=None):
         self.name = name
         self.layer = layer
         self.in_hook = in_hook
         self.out_hook = out_hook 
         self.index = index
-        self.in_graph = True
+        self.graph = graph
         self.parents = set()
         self.children = set()
         self.parent_edges = set()
         self.child_edges = set()
-        self.score = score
         self.qkv_inputs = qkv_inputs
-        self.neurons = neurons
-        self.neuron_scores = neuron_scores
-
-    def __eq__(self, other):
-        return self.name == other.name
     
     def __repr__(self):
         return f'Node({self.name}, in_graph: {self.in_graph})'
     
     def __hash__(self):
         return hash(self.name)
+    
+    # Nodes just report back their in_graph/score/neurons_in_graph/neurons_scores status from the graph
+    @property
+    def in_graph(self):
+        return self.graph.nodes_in_graph[self.graph.forward_index(self, attn_slice=False)]
+
+    @in_graph.setter
+    def in_graph(self, value):
+        self.graph.nodes_in_graph[self.graph.forward_index(self, attn_slice=False)] = value
+
+    @property
+    def score(self):
+        if self.graph.nodes_scores is None:
+            return None
+        return self.graph.nodes_scores[self.graph.forward_index(self, attn_slice=False)]
+
+    @score.setter
+    def score(self, value):
+        if self.graph.nodes_scores is None:
+            raise RuntimeError(f"Cannot set score for node {self.name} because the graph does not have node scores enabled")
+        self.graph.nodes_scores[self.graph.forward_index(self, attn_slice=False)] = value
+        
+    @property
+    def neurons(self):
+        if self.graph.neurons is None:
+            return None
+        return self.graph.neurons[self.graph.forward_index(self, attn_slice=False)]
+
+    @score.setter
+    def neurons(self, value):
+        if self.graph.neurons is None:
+            raise RuntimeError(f"Cannot set score for node {self.name} because the graph does not have node scores enabled")
+        self.graph.neurons[self.graph.forward_index(self, attn_slice=False)] = value
+        
+    @property
+    def neurons_scores(self):
+        if self.graph.neurons_scores is None:
+            return None
+        return self.graph.neurons_scores[self.graph.forward_index(self, attn_slice=False)]
+
+    @score.setter
+    def neurons_scores(self, value):
+        if self.graph.neurons_scores is None:
+            raise RuntimeError(f"Cannot set score for node {self.name} because the graph does not have node scores enabled")
+        self.graph.neurons_scores[self.graph.forward_index(self, attn_slice=False)] = value
 
 class LogitNode(Node):
-    def __init__(self, n_layers:int):
+    def __init__(self, n_layers:int, graph: 'Graph'):
         name = 'logits' 
         index = slice(None) 
-        super().__init__(name, n_layers - 1, f"blocks.{n_layers - 1}.hook_resid_post", '', index)
+        super().__init__(name, n_layers - 1, f"blocks.{n_layers - 1}.hook_resid_post", '', index, graph)
+        
+    @property
+    def in_graph(self):
+        return True
+
+    @in_graph.setter
+    def in_graph(self, value):
+        raise ValueError(f"Cannot set in_graph for logits node (always True)")
         
 class MLPNode(Node):
-    def __init__(self, layer: int, neurons: Optional[torch.Tensor] = None):
+    def __init__(self, layer: int, graph: 'Graph'):
         name = f'm{layer}'
         index = slice(None)
-        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index, neurons=neurons)
+        super().__init__(name, layer, f"blocks.{layer}.hook_mlp_in", f"blocks.{layer}.hook_mlp_out", index, graph)
 
 class AttentionNode(Node):
     head: int
-    def __init__(self, layer:int, head:int, neurons: Optional[torch.Tensor] = None):
+    def __init__(self, layer:int, head:int, graph: 'Graph'):
         name = f'a{layer}.h{head}' 
         self.head = head
         index = (slice(None), slice(None), head) 
-        super().__init__(name, layer, f'blocks.{layer}.hook_attn_in', f"blocks.{layer}.attn.hook_result", index, qkv_inputs=[f'blocks.{layer}.hook_{letter}_input' for letter in 'qkv'], neurons=neurons)
+        super().__init__(name, layer, f'blocks.{layer}.hook_attn_in', f"blocks.{layer}.attn.hook_result", index, graph, qkv_inputs=[f'blocks.{layer}.hook_{letter}_input' for letter in 'qkv'])
 
 class InputNode(Node):
-    def __init__(self, neurons: Optional[torch.Tensor] = None):
+    def __init__(self, graph: 'Graph'):
         name = 'input' 
         index = slice(None) 
-        super().__init__(name, 0, '', "hook_embed", index, neurons=neurons)  #"blocks.0.hook_resid_pre", index)
+        super().__init__(name, 0, '', "hook_embed", index, graph)
 
 class Edge:
     graph: 'Graph'
@@ -90,15 +136,14 @@ class Edge:
     child: Node 
     hook: str
     index: Tuple
-    def __init__(self, graph: 'Graph', parent: Node, child: Node, qkv:Union[None, Literal['q'], Literal['k'], Literal['v']]=None):
+    def __init__(self, graph: 'Graph', parent: Node, child: Node, qkv:Optional[Literal["q", "k", "v"]]=None):
         self.graph = graph
         self.name = f'{parent.name}->{child.name}' if qkv is None else f'{parent.name}->{child.name}<{qkv}>'
         self.parent = parent 
         self.child = child
         self.qkv = qkv
-        self.score = 0
-        self.in_graph = True
-        
+        self.matrix_index = (graph.forward_index(parent, attn_slice=False), graph.backward_index(child, qkv, attn_slice=False))
+                
         if isinstance(child, AttentionNode):
             if qkv is None:
                 raise ValueError(f'Edge({self.name}): Edges to attention heads must have a non-none value for qkv.')
@@ -107,31 +152,48 @@ class Edge:
         else:
             self.index = child.index
             self.hook = child.in_hook
-            
-            
-    def get_color(self):
-        if self.qkv is not None:
-            return EDGE_TYPE_COLORS[self.qkv]
-        elif self.score < 0:
-            return "#FF0000"
-        else:
-            return "#000000"
 
-    def __eq__(self, other):
-        return self.name == other.name
-    
     def __repr__(self):
         return f'Edge({self.name}, score: {self.score}, in_graph: {self.in_graph})'
     
     def __hash__(self):
         return hash(self.name)
+    
+    @property
+    def score(self):
+        return self.graph.scores[self.matrix_index]
+    
+    @score.setter
+    def score(self, value):
+        self.graph.scores[self.matrix_index] = value
+    
+    @property
+    def in_graph(self):
+        return self.graph.in_graph[self.matrix_index]
+    
+    @in_graph.setter
+    def in_graph(self, value):
+        self.graph.in_graph[self.matrix_index] = value
+        
+class GraphConfig(dict):
+    def __init__(self, *args, **kwargs):
+        super(GraphConfig, self).__init__(*args, **kwargs)
+        self.__dict__ = self
 
 class Graph:
     nodes: Dict[str, Node]
     edges: Dict[str, Edge]
-    n_forward: int 
-    n_backward: int
-    cfg: HookedTransformerConfig
+    n_forward: int  # the number of forward (source) nodes
+    n_backward: int  # the number of backward (destination) nodes
+    scores: torch.Tensor  # (n_forward, n_backward) tensor of edge scores
+    in_graph: torch.Tensor  # (n_forward, n_backward) tensor of whether the edge is in the graph
+    neurons_scores: Optional[torch.Tensor]  # (n_forward, d_model) tensor of neuron scores for each forward node
+    neurons_in_graph: Optional[torch.Tensor]  # (n_forward, d_model) tensor of whether the neuron is in the graph
+    nodes_scores: Optional[torch.Tensor]  # (n_forward) tensor of source node scores
+    nodes_in_graph: torch.Tensor  # (n_forward) tensor of whether the (source) node is in the graph
+    forward_to_backward: torch.Tensor
+    real_edge_mask: torch.Tensor   # (n_forward, n_backward) tensor of whether the edge is real (some edges are not real, e.g. m10->m2)
+    cfg: GraphConfig
 
     def __init__(self):
         self.nodes = {}
@@ -139,7 +201,7 @@ class Graph:
         self.n_forward = 0
         self.n_backward = 0
 
-    def add_edge(self, parent:Node, child:Node, qkv:Union[None, Literal['q'], Literal['k'], Literal['v']]=None):
+    def add_edge(self, parent:Node, child:Node, qkv:Optional[Literal["q", "k", "v"]]=None):
         edge = Edge(self, parent, child, qkv)
         self.edges[edge.name] = edge
         parent.children.add(child)
@@ -150,10 +212,8 @@ class Graph:
         
     def prev_index(self, node: Node) -> Union[int, slice]:
         """Return the forward index before which all nodes contribute to the input of the given node
-
         Args:
             node (Node): The node to get the prev forward index of
-
         Returns:
             Union[int, slice]: an index representing the prev forward index of the node
         """
@@ -161,7 +221,6 @@ class Graph:
             return 0
         elif isinstance(node, LogitNode):
             return self.n_forward
-            # raise ValueError(f"No forward for logits node")
         elif isinstance(node, MLPNode):
             if self.cfg['parallel_attn_mlp']:
                 return 1 + node.layer * (self.cfg['n_heads'] + 1)
@@ -172,34 +231,78 @@ class Graph:
             return i
         else:
             raise ValueError(f"Invalid node: {node} of type {type(node)}")
+        
+    @classmethod
+    def _n_forward(cls, cfg):
+        return 1 + cfg.n_layers * (cfg.n_heads + 1)
+    
+    @classmethod
+    def _n_backward(cls, cfg):
+        return cfg.n_layers * (3 * cfg.n_heads + 1) + 1
+        
+    @classmethod
+    def _forward_index(cls, cfg, node_name:str, attn_slice:bool=False) -> int:
+        """Given a model's config and a node specification, return the forward (source) index of the node in the graph. The forward index is the index of the node in the forward pass of the model, which is used to index into the graph's tensors.
 
-    def forward_index(self, node:Node, attn_slice=True):
-        if isinstance(node, InputNode):
+        Args:
+            cfg (_type_): a (HookedTransformer) config object
+            node_name (str): Name of the node: 'input', 'logits', 'm0', 'a0.h0', etc.
+            attn_slice (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            int: the forward index
+        """
+        if node_name == 'input':
             return 0
-        elif isinstance(node, LogitNode):
-            return self.n_forward
-            # raise ValueError(f"No forward for logits node")
-        elif isinstance(node, MLPNode):
-            return 1 + node.layer * (self.cfg['n_heads'] + 1) + self.cfg['n_heads']
-        elif isinstance(node, AttentionNode):
-            i =  1 + node.layer * (self.cfg['n_heads'] + 1)
-            return slice(i, i + self.cfg['n_heads']) if attn_slice else i + node.head
+        elif node_name == 'logits':
+            return 1 + cfg.n_layers * (cfg.n_heads + 1)
+        elif node_name[0] == 'm':
+            layer = int(node_name[1:])
+            return 1 + layer * (cfg.n_heads + 1) + cfg.n_heads
+        elif node_name[0] == 'a':
+            layer, head = node_name.split('.')
+            layer = int(layer[1:])
+            head = int(head[1:])
+            i =  1 + layer * (cfg.n_heads + 1)
+            return slice(i, i + cfg.n_heads) if attn_slice else i + head
         else:
-            raise ValueError(f"Invalid node: {node} of type {type(node)}")        
+            raise ValueError(f"Invalid node: {node_name}") 
 
-    def backward_index(self, node:Node, qkv=None, attn_slice=True):
-        if isinstance(node, InputNode):
+    def forward_index(self, node:Node, attn_slice=True) -> int:
+        return Graph._forward_index(self.cfg, node.name, attn_slice)        
+
+    @classmethod
+    def _backward_index(cls, cfg, node_name:str, qkv=None, attn_slice=False) -> int:
+        """Given a model's config and a node specification, return the backward (destination) index of the node in the graph. The backward index is the index of the node in the backward pass of the model, which is used to index into the graph's tensors.
+
+        Args:
+            cfg (_type_): A (HookedTransformer) config object
+            node_name (str): Name of the node: 'input', 'logits', 'm0', 'a0.h0', etc.
+            qkv (_type_, optional): Whether the destination (for attention heads) is the q/k/v input. Defaults to None.
+            attn_slice (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            int: the backward index
+        """
+        if node_name == 'input':
             raise ValueError(f"No backward for input node")
-        elif isinstance(node, LogitNode):
+        elif node_name == 'logits':
             return -1
-        elif isinstance(node, MLPNode):
-            return (node.layer) * (3 * self.cfg['n_heads'] + 1) + 3 * self.cfg['n_heads']
-        elif isinstance(node, AttentionNode):
+        elif node_name[0] == 'm':
+            layer = int(node_name[1:])
+            return (layer) * (3 * cfg['n_heads'] + 1) + 3 * cfg['n_heads']
+        elif node_name[0] == 'a':
             assert qkv in 'qkv', f'Must give qkv for AttentionNode, but got {qkv}'
-            i = node.layer * (3 * self.cfg['n_heads'] + 1) + ('qkv'.index(qkv) * self.cfg['n_heads'])
-            return slice(i, i + self.cfg['n_heads']) if attn_slice else i + node.head
+            layer, head = node_name.split('.')
+            layer = int(layer[1:])
+            head = int(head[1:])
+            i = layer * (3 * cfg['n_heads'] + 1) + ('qkv'.index(qkv) * cfg['n_heads'])
+            return slice(i, i + cfg['n_heads']) if attn_slice else i + head
         else:
-            raise ValueError(f"Invalid node: {node} of type {type(node)}")
+            raise ValueError(f"Invalid node: {node_name}")
+        
+    def backward_index(self, node:Node, qkv=None, attn_slice=True) -> int:
+        return Graph._backward_index(self.cfg, node.name, qkv, attn_slice)
         
     def get_dst_nodes(self):
         heads = []
@@ -211,95 +314,211 @@ class Graph:
         heads.append('logits')
         return heads
 
-    def scores(self, nonzero=False, in_graph=False, sort=True):
-        s = torch.tensor([edge.score for edge in self.edges.values() if edge.score != 0 and (edge.in_graph or not in_graph)]) if nonzero else torch.tensor([edge.score for edge in self.edges.values()])
-        return torch.sort(s).values if sort else s
-    
     def weighted_edge_count(self) -> float:
         """Generates a count of the edges, weighted by number of neurons included if applicable
 
         Returns:
             float: weighted edge count
         """
-        weighted_count = 0
-        for edge in self.edges.values():
-            if edge.in_graph:
-                if edge.parent.neurons is not None:
-                    weighted_count += (edge.parent.neurons.sum() / edge.parent.neurons.size(0)).item()
-                else:
-                    weighted_count += 1
-        return weighted_count
+        if self.neurons_in_graph is not None:
+            return einsum(self.in_graph.float(), self.neurons_in_graph.float(), 'forward backward, forward d_model ->') / self.cfg['d_model']
+        else:
+            return self.count_included_edges()
 
     def count_included_edges(self):
-        return sum(edge.in_graph for edge in self.edges.values())
+        return self.in_graph.sum()
     
     def count_included_nodes(self):
-        return sum(node.in_graph for node in self.nodes.values())
-
-    def apply_threshold(self, threshold: float, absolute: bool):
-        threshold = float(threshold)
-        for node in self.nodes.values():
-            node.in_graph = True 
-            
-        for edge in self.edges.values():
-            edge.in_graph = abs(edge.score) >= threshold if absolute else edge.score >= threshold
+        return self.nodes_in_graph.sum()
     
-    def apply_topn(self, n:int, absolute: bool, node_level=False, neuron_level=False):
-        def abs_id(s: float):
-            return abs(s) if absolute else s
+    def reset(self, empty=True):
+        """Resets the graph, setting everything to zero. If empty is False, sets everything to True instead.
 
-        # get top-n nodes
-        if node_level:
-            non_logit_nodes = [node for node in self.nodes.values() if not isinstance(node, LogitNode)]
-            if neuron_level:
-                assert all(node.neuron_scores is not None for node in non_logit_nodes), "All non-logit nodes must have a score to apply top-n nodes"
-                neuron_scores = torch.cat([node.neuron_scores for node in non_logit_nodes])
-                top_n_score = neuron_scores.sort(descending=True)[n]
+        Args:
+            empty (bool, optional): If true, removes everything from graph; otherwise adds everything. Defaults to True.
+        """
+        if empty:
+            self.nodes_in_graph *= False
+            self.in_graph *= False
+            if self.neurons_in_graph is not None:
+                self.neurons_in_graph *= False
+        else:
+            self.nodes_in_graph[:] = True
+            self.in_graph[:] = True
+            self.in_graph &= self.real_edge_mask
+            if self.neurons_in_graph is not None:
+                self.neurons_in_graph[:] = True
+                
+    def apply_threshold(self, threshold: float, absolute: bool, reset: bool=True, level:Literal['edge','node','neuron']='edge', prune=True):
+        """Apply a threshold to the graph, setting the in_graph attribute of edges/nodes/neurons to True if the score is above the threshold. If a node or neuron has no score, it's assumed to always be in the graph.
+        Args:
+            threshold (float): the threshold to apply
+            absolute (bool): whether to take the absolute value of the scores before applying the threshold
+            reset (bool): resets the graph, setting everything to zero, before applying topn. Only if reset=True will corresponding outgoing edges be added after neuron and node topn
+            level (str, optional): level at which to apply topn. Defaults to 'edge'.
+            prune (bool): whether to prune the graph after applying topn"""
+        threshold = float(threshold)
+        if reset:
+            self.reset()
 
-                self.nodes['logits'].in_graph = True
-                for i, node in enumerate(non_logit_nodes):
-                    node.neurons = node.neuron_scores >= top_n_score
-                    node.in_graph = torch.any(node.neurons)
+        if level == 'neuron':
+            unscored_neurons = torch.isnan(self.neurons_scores)
+            neuron_score_copy = self.neurons_scores.clone()
+            if absolute:
+                neuron_score_copy = torch.abs(neuron_score_copy)
+                
+            # We definitely want unscored neurons to be in the graph
+            neuron_score_copy[unscored_neurons] = torch.inf
+            included_neurons = (neuron_score_copy >= threshold)
+            self.neurons_in_graph[:] = included_neurons
+            
+            if reset: 
+                # if we've reset the graph (everything is empty), add in the nodes that are on
+                # and activate their outgoing edges
+                self.nodes_in_graph += self.neurons_in_graph.any(dim=1)
+                self.in_graph += self.nodes_in_graph.view(-1, 1)
+                
+        elif level == 'node':
+            unscored_nodes =  torch.isnan(self.nodes_scores)
+            
+            node_score_copy = self.nodes_scores.clone()
+            if absolute:
+                node_score_copy = torch.abs(node_score_copy)
+                
+            node_score_copy[unscored_nodes] = torch.inf
+            included_nodes = (node_score_copy >= threshold)
+            self.nodes_in_graph[:] = included_nodes
+                            
+            if reset: 
+                # if we've reset the graph (everything is empty), add in the nodes that are on
+                # and activate their outgoing edges
+                self.in_graph += self.nodes_in_graph.view(-1, 1)
+                
+        elif level == 'edge':
+            edge_scores = self.scores.clone()
+            if absolute:
+                edge_scores = torch.abs(edge_scores)
+            
+            # masking out the edges that are not real
+            edge_scores[~self.real_edge_mask] = -torch.inf 
+            
+            surpass_threshold = edge_scores >= threshold
+            self.in_graph[:] = surpass_threshold
+            
+            if reset:
+                nodes_with_outgoing = self.in_graph.any(dim=1)
+                nodes_with_ingoing = einsum(self.in_graph.any(dim=0).float(), self.forward_to_backward.float(), 'backward, forward backward -> forward') > 0
+                nodes_with_ingoing[0] = True
+                self.nodes_in_graph += nodes_with_outgoing & nodes_with_ingoing
+        else:
+            raise ValueError(f"Invalid level: {level}")
+        
+        if prune:
+            self.prune()
+    
+    def apply_topn(self, n:int, absolute: bool, level:Literal['edge','node','neuron']='edge', reset: bool=True, prune:bool=True):
+        """Sets the graph to contain only the top-n components. The components are specified by the level parameter, which can be 'edge','node', or 'neuron'. If 'node', the top-n nodes are selected based on their scores, and all outgoing edges to nodes in the graph are true. If 'edge', the top-n edges are selected based on their scores. If 'neuron', the top-n neurons are selected based on their scores, and all outgoing edges to nodes with neurons in the graph are true.
 
-                for edge in self.edges.values():
-                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+        Args:
+            n (int): number of edges/nodes/neurons to take
+            absolute (bool): whether to apply topn based on the absolute value of the scores
+            reset (bool): resets the graph, setting everything to zero, before applying topn. Only if reset=True will corresponding edges be added after neuron and node topn
+            level (str, optional): level at which to apply topn. Defaults to 'edge'.
+            prune (bool): whether to prune the graph after applying topn
+        """
+        if reset:
+            self.reset()
 
-            else:
-                assert all(node.score is not None for node in non_logit_nodes), "All non-logit nodes must have a score to apply top-n nodes"
-                sorted_nodes = sorted([node for node in non_logit_nodes], key = lambda node: abs_id(node.score), reverse=True)
+        if level == 'neuron':
+            scored_neurons =  ~torch.isnan(self.neurons_scores)
+            n_scored_neurons = scored_neurons.sum()
+            assert  n <= scored_neurons, f"Requested n ({n}) is greater than the number of scored neurons ({n_scored_neurons})"
+            neuron_score_copy = self.neurons_scores.clone()
+            if absolute:
+                neuron_score_copy = torch.abs(neuron_score_copy)
+                
+            neuron_score_copy[~scored_neurons] = -torch.inf
+            sorted_neurons = torch.argsort(neuron_score_copy.view(-1), descending=True)
 
-                self.nodes['logits'].in_graph = True
-                for node in sorted_nodes[:n]:
-                    node.in_graph = True
-                for node in sorted_nodes[n:]:
-                    node.in_graph = False
+            # set the topn neurons to be in the graph
+            self.neurons_in_graph.view(-1)[sorted_neurons[:n]] = True
+            # set those outside the topn not to be in the graph
+            self.neurons_in_graph.view(-1)[sorted_neurons[n:]] = False
+            # unscored neurons must also be re-added to the graph
+            self.neurons_in_graph.view(-1)[~scored_neurons.view(-1)] = True
+            # remove any nodes with no neurons in the graph
+            
+            if reset: 
+                # if we've reset the graph (everything is empty), add in the nodes that are on
+                # and activate their outgoing edges
+                self.nodes_in_graph += self.neurons_in_graph.any(dim=1)
+                self.in_graph += self.nodes_in_graph.view(-1, 1)
+                
+        elif level == 'node':
+            scored_nodes =  ~torch.isnan(self.nodes_scores)
+            n_scored_nodes = scored_nodes.sum()
+            assert  n <= n_scored_nodes, f"Requested n ({n}) is greater than the number of scored nodes ({n_scored_nodes})"
 
-                for edge in self.edges.values():
-                    edge.in_graph = edge.parent.in_graph and edge.child.in_graph
+            node_score_copy = self.nodes_scores.clone()
+            if absolute:
+                node_score_copy = torch.abs(node_score_copy)
+                
+            node_score_copy[~scored_nodes] = -torch.inf
+            sorted_nodes = torch.argsort(node_score_copy.view(-1), descending=True)
+
+            # set the topn neurons to be in the graph
+            self.nodes_in_graph.view(-1)[sorted_nodes[:n]] = True
+            # set those outside the topn not to be in the graph
+            self.nodes_in_graph.view(-1)[sorted_nodes[n:]] = False
+            # unscored nodes must also be re-added to the graph
+            self.nodes_in_graph.view(-1)[~scored_nodes.view(-1)] = True
+                            
+            if reset: 
+                # if we've reset the graph (everything is empty), add in the nodes that are on
+                # and activate their outgoing edges
+                self.in_graph += self.nodes_in_graph.view(-1, 1)
 
         # get top-n edges
-        else:
-            if neuron_level:
-                raise ValueError("Neuron and edge-level top-n not supported; choose one or the other, or provide the circuit yourself")
-            for node in self.nodes.values():
-                node.in_graph = False
+        elif level == 'edge':
+            assert n <= self.real_edge_mask.sum(), f"Requested n ({n}) is greater than the number of edges ({self.real_edge_mask.sum()})"
             
-            sorted_edges = sorted(list(self.edges.values()), key = lambda edge: abs_id(edge.score), reverse=True)
-            for edge in sorted_edges[:n]:
-                edge.in_graph = True 
-                edge.parent.in_graph = True 
-                edge.child.in_graph = True 
+            edge_scores = self.scores.clone()
+            if absolute:
+                edge_scores = torch.abs(edge_scores)
+            
+            # masking out the edges that are not real
+            edge_scores[~self.real_edge_mask] = -torch.inf 
+            
+            sorted_edges = torch.argsort(edge_scores.view(-1), descending=True)
+            self.in_graph.view(-1)[sorted_edges[:n]] = True
+            self.in_graph.view(-1)[sorted_edges[n:]] = False
+            if reset:
+                nodes_with_outgoing = self.in_graph.any(dim=1)
+                nodes_with_ingoing = einsum(self.in_graph.any(dim=0).float(), self.forward_to_backward.float(), 'backward, forward backward -> forward') > 0
+                nodes_with_ingoing[0] = True
+                self.nodes_in_graph += nodes_with_outgoing & nodes_with_ingoing
+            
+        else:
+            raise ValueError(f"Invalid level: {level}")
+        
+        if prune:
+            self.prune()
 
-            for edge in sorted_edges[n:]:
-                edge.in_graph = False
-
-    def apply_greedy(self, n_edges, reset=True, absolute: bool = True):
+    def apply_greedy(self, n_edges:int, reset:bool = True, absolute: bool = True, prune:bool = True):
+        """
+        Gets the topn edges of the graph using a greedy algorithm that works from the logits up. Only defined over edges
+        
+        Args:
+            n_edges (int): the number of edges to include
+            reset (bool): whether to reset the graph before applying the greedy algorithm
+            absolute (bool): whether to take the absolute value of the scores before applying the greedy algorithm
+        """
+        if n_edges > len(self.edges):
+            raise ValueError(f"n ({n_edges}) is greater than the number of edges ({len(self.edges)})")
+        
         if reset:
-            for node in self.nodes.values():
-                node.in_graph = False 
-            for edge in self.edges.values():
-                edge.in_graph = False
-            self.nodes['logits'].in_graph = True
+            self.nodes_in_graph *= False
+            self.in_graph *= False
 
         def abs_id(s: float):
             return abs(s) if absolute else s
@@ -316,59 +535,105 @@ class Graph:
                 parent.in_graph = True
                 parent_parent_edges = sorted([parent_edge for parent_edge in parent.parent_edges], key = lambda edge: abs_id(edge.score), reverse=True)
                 edges = heapq.merge(edges, parent_parent_edges, key = lambda edge: abs_id(edge.score), reverse=True)
+        
+        if prune:
+            self.prune()
+        
 
-    def prune_dead_nodes(self, prune_childless=True, prune_parentless=True):
-        self.nodes['logits'].in_graph = any(parent_edge.in_graph for parent_edge in self.nodes['logits'].parent_edges)
-
-        for node in reversed(self.nodes.values()):
-            if isinstance(node, LogitNode):
-                continue 
+    def prune(self):
+        """Converts a potentially messy Graph into one that is fully connected. The number of components after this is done is strictly non-increasing; it may remove nodes or edges from the graph, but it won't add them. This function first removes nodes with no neurons (if applicable). Then, it repeatedly removes nodes that lack incoming or outgoing edges (or both), and then edges missing a parent or child. Finally, it pruned the neurons of any removed nodes.
+        """
+        
+        # remove neuronless nodes
+        if self.neurons_in_graph is not None:
+            self.nodes_in_graph *= self.neurons_in_graph.any(dim=1)
+        
+        old_new_same = False
+        # Could take twice as many iterations as there are layers! But will probably not
+        while not old_new_same:
+            # remove nodes with 0 incoming or outgoing edges
+            nodes_with_outgoing = self.in_graph.any(dim=1)
+            nodes_with_ingoing = einsum(self.in_graph.any(dim=0).float(), self.forward_to_backward.float(), 'backward, forward backward -> forward') > 0
+            nodes_with_ingoing[0] = True  # input node always treated as if it has incoming edges
+            new_nodes_in_graph = nodes_with_outgoing & nodes_with_ingoing
+            old_new_same = torch.all(new_nodes_in_graph == self.nodes_in_graph)
+            self.nodes_in_graph[:] = new_nodes_in_graph
             
-            if any(child_edge.in_graph for child_edge in node.child_edges) :
-                node.in_graph = True
-            else:
-                if prune_childless:
-                    node.in_graph = False
-                    for parent_edge in node.parent_edges:
-                        parent_edge.in_graph = False
-                else: 
-                    if any(child_edge.in_graph for child_edge in node.child_edges):
-                        node.in_graph = True 
-                    else:
-                        node.in_graph = False
-
-        if prune_parentless:
-            for node in self.nodes.values():
-                if not isinstance(node, InputNode) and node.in_graph and not any(parent_edge.in_graph for parent_edge in node.parent_edges):
-                    node.in_graph = False 
-                    for child_edge in node.child_edges:
-                        child_edge.in_graph = False
-
+            # remove edges with missing parents or children
+            forward_in_graph = self.nodes_in_graph.float()
+            backward_in_graph = (self.nodes_in_graph.float() @ self.forward_to_backward.float())
+            backward_in_graph[-1] = 1  # logits node is always present
+            edge_remask = einsum(forward_in_graph, backward_in_graph, 'forward, backward -> forward backward') > 0
+            self.in_graph *= edge_remask
+            
+        # remove neurons from nodes not in the graph
+        if self.neurons_in_graph is not None:
+                self.neurons_in_graph *= self.nodes_in_graph.view(-1, 1)
+            
 
     @classmethod
-    def from_model(cls, model_or_config: Union[HookedTransformer,HookedTransformerConfig, Dict], neuron_level: bool = False):
+    def from_model(cls, model_or_config: Union[HookedTransformer,HookedTransformerConfig, Dict], neuron_level: bool = False, node_scores: bool = False) -> 'Graph':
+        """Instantiate a Graph object from a HookedTransformer or HookedTransformerConfig object, or a similar Dict. The neuron_level parameter determines whether the graph should be neuron-level or not, while the node_scores parameter determines whether the graph should have node scores or not. If you don't have scores for all nodes / neurons, just don't set them (default is torch.nan). Any node/neuron without a real score will always be kept in the graph when doing node/neuron-level topn (but might be eliminated by another level's topn, e.g. a node with no neuron scores might be removed if it loses all edges)
+
+        Args:
+            model_or_config (Union[HookedTransformer,HookedTransformerConfig, Dict]): A config object; it needs to contain n_layers, n_heads, parallel_attn_mlp, and d_model.
+            neuron_level (bool, optional): _description_. Defaults to False.
+            node_scores (bool, optional): _description_. Defaults to False.
+
+        Raises:
+            ValueError: If you pass an invalid type for model_or_config
+
+        Returns:
+            _type_: a Graph
+        """
         graph = Graph()
+        graph.cfg = GraphConfig()
         if isinstance(model_or_config, HookedTransformer):
             cfg = model_or_config.cfg
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
+            graph.cfg.update({'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp, 'd_model': cfg.d_model})
         elif isinstance(model_or_config, HookedTransformerConfig):
             cfg = model_or_config
-            graph.cfg = {'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp}
+            graph.cfg.update({'n_layers': cfg.n_layers, 'n_heads': cfg.n_heads, 'parallel_attn_mlp':cfg.parallel_attn_mlp, 'd_model': cfg.d_model})
+        elif isinstance(model_or_config, dict):
+            graph.cfg.update(model_or_config)
         else:
-            graph.cfg = model_or_config
+            raise ValueError(f"Invalid input type: {type(model_or_config)}")
             
-        neurons = torch.zeros(graph.cfg['d_model']) if neuron_level else None
-        input_node = InputNode(neurons)
+        graph.n_forward = 1 + graph.cfg['n_layers'] * (graph.cfg['n_heads'] + 1)
+        graph.n_backward = graph.cfg['n_layers'] * (3 * graph.cfg['n_heads'] + 1) + 1
+        graph.forward_to_backward = torch.zeros((graph.n_forward, graph.n_backward)).bool()
+        
+        graph.scores = torch.zeros((graph.n_forward, graph.n_backward))
+        graph.real_edge_mask = torch.zeros((graph.n_forward, graph.n_backward)).bool()
+        graph.in_graph = torch.zeros((graph.n_forward, graph.n_backward)).bool()
+        graph.nodes_in_graph = torch.zeros(graph.n_forward).bool()
+        if node_scores:
+            graph.nodes_scores = torch.zeros(graph.n_forward) 
+            graph.nodes_scores[:] = torch.nan
+        else:
+            graph.nodes_scores = None
+        if neuron_level:
+            graph.neurons_in_graph = torch.zeros((graph.n_forward, graph.cfg['d_model'])).bool()
+            graph.neurons_scores = torch.zeros((graph.n_forward, graph.cfg['d_model']))
+            graph.neurons_scores[:] = torch.nan
+        else:
+            graph.neurons_in_graph = None
+            graph.neurons_scores = None
+        
+        input_node = InputNode(graph)
         graph.nodes[input_node.name] = input_node
         residual_stream = [input_node]
 
         for layer in range(graph.cfg['n_layers']):
-            attn_nodes = [AttentionNode(layer, head, neurons) for head in range(graph.cfg['n_heads'])]
-            mlp_node = MLPNode(layer, neurons)
+            attn_nodes = [AttentionNode(layer, head, graph) for head in range(graph.cfg['n_heads'])]
+            mlp_node = MLPNode(layer, graph)
             
             for attn_node in attn_nodes: 
                 graph.nodes[attn_node.name] = attn_node 
+                for letter in 'qkv':
+                    graph.forward_to_backward[graph.forward_index(attn_node, attn_slice=False), graph.backward_index(attn_node, attn_slice=False, qkv=letter)] = True
             graph.nodes[mlp_node.name] = mlp_node     
+            graph.forward_to_backward[graph.forward_index(mlp_node, attn_slice=False), graph.backward_index(mlp_node, attn_slice=False)] = True
                                     
             if graph.cfg['parallel_attn_mlp']:
                 for node in residual_stream:
@@ -391,55 +656,65 @@ class Graph:
                     graph.add_edge(node, mlp_node)
                 residual_stream.append(mlp_node)
                         
-        logit_node = LogitNode(graph.cfg['n_layers'])
+        logit_node = LogitNode(graph.cfg['n_layers'], graph)
         for node in residual_stream:
             graph.add_edge(node, logit_node)
             
         graph.nodes[logit_node.name] = logit_node
 
-        graph.n_forward = 1 + graph.cfg['n_layers'] * (graph.cfg['n_heads'] + 1)
-        graph.n_backward = graph.cfg['n_layers'] * (3 * graph.cfg['n_heads'] + 1) + 1
-
         return graph
 
-    def edge_matrices(self): 
-        edge_scores = torch.zeros((self.n_forward, self.n_backward))
-        edges_in_graph = torch.zeros((self.n_forward, self.n_backward)).bool()
-        for edge in self.edges.values():
-            edge_scores[self.forward_index(edge.parent, attn_slice=False), self.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = edge.score
-            edges_in_graph[self.forward_index(edge.parent, attn_slice=False), self.backward_index(edge.child, qkv=edge.qkv, attn_slice=False)] = edge.in_graph
-            
-        return edge_scores, edges_in_graph
 
-
-    def to_json(self, filename: str, neurons: bool = False):
+    def to_json(self, filename: str):
         # non serializable info
-        d = {'cfg':self.cfg, 'nodes': {str(name): bool(node.in_graph) for name, node in self.nodes.items()}, 'edges':{str(name): {'score': None if edge.score is None else float(edge.score), 'in_graph': bool(edge.in_graph)} for name, edge in self.edges.items()}}
-        if neurons:
-            d['neurons'] = {str(name): node.neurons.tolist() for name, node in self.nodes.items() if node.neurons is not None}
+        d = {'cfg':dict(self.cfg)}
+        node_dict = {}
+        for node_name, node in self.nodes.items():
+            node_dict[node_name] = {'in_graph': bool(node.in_graph)}
+            if self.nodes_scores is not None:
+                node_dict[node_name]['score'] = float(node.score)
+            if self.neurons_in_graph is not None:
+                node_dict[node_name]['neurons'] = self.neurons_in_graph[self.forward_index(node)].tolist()
+                node_dict[node_name]['neurons_scores'] = self.neurons_scores[self.forward_index(node)].tolist()
+        d['nodes'] = node_dict 
+        
+        edge_dict = {}
+        for edge_name, edge in self.edges.items():
+            edge_dict[edge_name] = {'score': edge.score, 'in_graph': bool(edge.in_graph)}
+        
         with open(filename, 'w') as f:
             json.dump(d, f)
             
             
-    def to_pt(self, filename: str, neurons: bool = False):
-        src_nodes = {node.name: node.in_graph for node in self.nodes.values() if not isinstance(node, LogitNode)}
+    def to_pt(self, filename: str):
+        """Export this Graph as a .pt file
+
+        Args:
+            filename (str): The filename to save the graph to
+        """
+        src_nodes = [node.name for node in self.nodes.values() if not isinstance(node, LogitNode)]
         dst_nodes = self.get_dst_nodes()
-        edge_scores, edges_in_graph = self.edge_matrices()
-        d = {'cfg':self.cfg, 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges': edge_scores, 'edges_in_graph': edges_in_graph}
-        if neurons:
-            d['neurons'] = torch.stack([node.neurons if node.neurons is not None else torch.ones(self.cfg['d_model']) for node in self.nodes.values() if not isinstance(node, LogitNode)])
+        d = {'cfg':dict(self.cfg), 'src_nodes': src_nodes, 'dst_nodes': dst_nodes, 'edges_scores': self.scores, 'edges_in_graph': self.in_graph, 'nodes_in_graph': self.nodes_in_graph}
+        if self.nodes_scores is not None:
+            d['nodes_scores'] = self.nodes_scores
+        if self.neurons_in_graph is not None:
+            d['neurons_in_graph'] = self.neurons_in_graph
+            d['neurons_scores'] = self.neurons_scores
         torch.save(d, filename)
 
 
     def to_graphviz(
         self,
+        filename:str,
         colorscheme: str = "Pastel2",
         minimum_penwidth: float = 0.6,
         maximum_penwidth: float = 5.0,
         layout: str="dot",
         seed: Optional[int] = None
     ) -> pgv.AGraph:
-        """
+        """Export the graph as a .png file
+        
+        Filename: the filename to save the graph to
         Colorscheme: a cmap colorscheme
         """
         g = pgv.AGraph(directed=True, bgcolor="white", overlap="false", splines="true", layout=layout)
@@ -459,31 +734,16 @@ class Graph:
                         fontname="Helvetica",
                         )
 
-        scores = self.scores().abs()
+        scores = self.scores.view(-1).abs()
         max_score = scores.max().item()
         min_score = scores.min().item()
         for edge in self.edges.values():
             if edge.in_graph:
-                score = 0 if edge.score is None else edge.score
-                normalized_score = (abs(score) - min_score) / (max_score - min_score) if max_score != min_score else abs(score)
+                normalized_score = (abs(edge.score) - min_score) / (max_score - min_score) if max_score != min_score else abs(edge.score)
                 penwidth = max(minimum_penwidth, normalized_score * maximum_penwidth)
                 g.add_edge(edge.parent.name,
                         edge.child.name,
                         penwidth=str(penwidth),
-                        color=edge.get_color(),
+                        color=get_color(edge.qkv, edge.score),
                         )
-        return g
-
-    def __eq__(self, other):
-        keys_equal = (set(self.nodes.keys()) == set(other.nodes.keys())) and (set(self.edges.keys()) == set(other.edges.keys()))
-        if not keys_equal:
-            return False
-        
-        for name, node in self.nodes.items():
-            if node.in_graph != other.nodes[name].in_graph:
-                return False 
-            
-        for name, edge in self.edges.items():
-            if (edge.in_graph != other.edges[name].in_graph) or not np.allclose(edge.score, other.edges[name].score):
-                return False
-        return True
+        g.draw(filename, prog="dot")
