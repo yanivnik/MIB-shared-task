@@ -19,35 +19,31 @@ def load_graph_from_json(json_path: str):
         d = json.load(f)
         assert all([k in d.keys() for k in ['cfg', 'nodes', 'edges']]), "Bad input JSON format - Missing keys"
 
-    g = Graph.from_model(d['cfg'])
-    for name, in_graph in d['nodes'].items():
-        g.nodes[name].in_graph = in_graph
+    g = Graph.from_model(d['cfg'], neuron_level=True, node_scores=True)
+    any_node_scores, any_neurons, any_neurons_scores = False, False, False
+    for name, node_dict in d['nodes'].items():
+        g.nodes[name].in_graph = node_dict['in_graph']
+        if 'score' in node_dict:
+            any_node_scores = True
+            g.nodes[name].score = node_dict['score']
+        if 'neurons' in node_dict:
+            any_neurons = True
+            g.neurons_in_graph[g.forward_index(g.nodes[name])] = torch.tensor(node_dict['neurons']).float()
+        if 'neurons_scores' in node_dict:
+            any_neurons_scores = True
+            g.neurons_scores[g.forward_index(g.nodes[name])] = torch.tensor(node_dict['neurons_scores']).float()
+            
+    if not any_node_scores:
+        g.nodes_scores = None
+    if not any_neurons:
+        g.neurons_in_graph = None
+    if not any_neurons_scores:
+        g.neurons_scores = None        
     
     for name, info in d['edges'].items():
         g.edges[name].score = info['score']
         g.edges[name].in_graph = info['in_graph']
         
-    if 'node_scores' in d:
-        for name, score in d['node_scores'].items():
-            g.nodes[name].score = score
-        
-    if 'neurons' in d:
-        for name, neurons in d['neurons'].items():
-            g.nodes[name].neurons = torch.tensor(neurons).float()
-            
-    if 'neuron_scores' in d:
-        for name, neuron_scores in d['neuron_scores'].items():
-            g.nodes[name].neuron_scores = torch.tensor(neuron_scores).float()
-
-    if 'neuron_scores' in d.keys():
-        for name, neuron_scores in d['neuron_scores'].items():
-            if type(neuron_scores) == list:
-                g.nodes[name].neuron_scores = torch.tensor(neuron_scores)
-            elif type(neuron_scores) == float:
-                g.nodes[name].neuron_scores = neuron_scores
-            else:
-                raise ValueError(f"Invalid type for neuron_scores: {type(neuron_scores)}")
-
     return g
 
 # TODO: MAYBE CHANGE THE WAY THAT THE EDGES ARE STORED IN THE GRAPH OBJECT TO THE TENSOR BASED ONE, TO SUPPORT EFFICIENT MASKING
@@ -63,32 +59,24 @@ def load_graph_from_pt(pt_path):
         6. 'neurons': [Optional] torch.tensor[n_src_nodes, d_model], where each value in (src, neuron) indicates whether the neuron is in the graph or not
     """
     d = torch.load(pt_path)
-    assert all([k in d.keys() for k in ['cfg', 'src_nodes', 'dst_nodes', 'edges', 'edges_in_graph']]), f"Bad torch circuit file format. Found keys - {d.keys()}, missing keys - {set(['cfg', 'src_nodes', 'dst_nodes', 'edges', 'edges_in_graph']) - set(d.keys())}"
-    assert d['edges'].shape == d['edges_in_graph'].shape == (len(d['src_nodes']), len(d['dst_nodes'])), "Bad edges array shape"
+    required_keys = ['cfg', 'src_nodes', 'dst_nodes', 'edges_scores', 'edges_in_graph', 'nodes_in_graph']
+    assert all([k in d.keys() for k in required_keys]), f"Bad torch circuit file format. Found keys - {d.keys()}, missing keys - {set(required_keys) - set(d.keys())}"
+    assert d['edges'].shape == d['edges_in_graph'].shape, "Bad edges array shape"
+    # assert d['edges'].shape == d['edges_in_graph'].shape == (len(d['src_nodes']), len(d['dst_nodes'])), "Bad edges array shape"
 
     g = Graph.from_model(d['cfg'])
 
-    for name, in_graph in d['src_nodes'].items():
-        g.nodes[name].in_graph = in_graph
-
-    # Enumerate over the tensor and fill the edge values in the graph
-    for src_idx, src_name in enumerate(d['src_nodes']):
-        for dst_idx, dst_name in enumerate(d['dst_nodes']):
-            edge_name = f'{src_name}->{dst_name}'
-            if edge_name in g.edges.keys():
-                g.edges[edge_name].score = d['edges'][src_idx, dst_idx]
-                g.edges[edge_name].in_graph = d['edges_in_graph'][src_idx, dst_idx]
+    g.in_graph[:] = d['edges_in_graph']
+    g.scores[:] = d['edges_scores']
+    g.nodes_in_graph[:] = d['nodes_in_graph']
     
-    if 'node_scores' in d:
-        for i, src_node in enumerate(d['src_nodes']):
-            g.nodes[src_node].score = d['node_scores'][i]
+    if 'nodes_scores' in d:
+        g.nodes_scores = d['nodes_scores']
                 
-    if 'neurons' in d:
-        for i, src_node in enumerate(d['src_nodes']):
-            g.nodes[src_node].neurons = d['neurons'][i]
+    if 'neurons_in_graph' in d:
+        g.neurons_in_graph = d['neurons_in_graph']
     
-    if 'neuron_scores' in d:
-        for i, src_node in enumerate(d['src_nodes']):
-            g.nodes[src_node].neuron_scores = d['neuron_scores'][i]
+    if 'neurons_scores' in d:
+        g.neurons_scores = d['neurons_scores']
 
     return g
