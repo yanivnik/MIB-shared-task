@@ -73,7 +73,7 @@ class HFEAPDataset(Dataset):
     def __getitem__(self, index):
         row = self.dataset[index]
         if self.task == 'ioi':
-            counterfactual_col = 's1_ioi_flip_s2_ioi_flip_cf' #'abc_cf'
+            counterfactual_col = 's2_io_flip_cf' if True else 'abc_cf'
             correct_idx = self.tokenizer(f" {row['metadata']['indirect_object']}", add_special_tokens=False).input_ids[0]
             incorrect_idx = self.tokenizer(f" {row['metadata']['subject']}", add_special_tokens=False).input_ids[0]
             return row['text'], row['counterfactuals'][counterfactual_col], [correct_idx, incorrect_idx]
