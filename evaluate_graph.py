@@ -276,7 +276,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        quiet=quiet, intervention=intervention,
                                        intervention_dataloader=intervention_dataloader).mean().item()
-        faithfulness = ablated_score / baseline_score
+        faithfulness = (ablated_score - corrupted_score) / (baseline_score - corrupted_score)
         print(faithfulness)
         faithfulnesses.append(faithfulness)
     
