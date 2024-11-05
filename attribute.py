@@ -123,6 +123,7 @@ def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:i
         node = graph.nodes[f'm{layer}']
         fwd_index = graph.forward_index(node)
         bwd_index = graph.backward_index(node)
+        prev_index = graph.prev_index(node)
         fwd_hooks_corrupted.append((node.out_hook, partial(activation_hook, fwd_index)))
         fwd_hooks_clean.append((node.out_hook, partial(activation_hook, fwd_index, add=False)))
         bwd_hooks.append((node.in_hook, partial(gradient_hook, prev_index, bwd_index)))
