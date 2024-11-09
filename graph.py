@@ -681,7 +681,9 @@ class Graph:
         
         edge_dict = {}
         for edge_name, edge in self.edges.items():
-            edge_dict[edge_name] = {'score': edge.score, 'in_graph': bool(edge.in_graph)}
+            edge_dict[edge_name] = {'score': edge.score.item(), 'in_graph': bool(edge.in_graph)}
+            
+        d['edges'] = edge_dict
         
         with open(filename, 'w') as f:
             json.dump(d, f)
