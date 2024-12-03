@@ -52,18 +52,19 @@ def get_metric(metric_name: str,
         else:
             logit_diff_fn = logit_diff
         return partial(logit_diff_fn, prob=prob)
+    elif metric_name == "normalized_logit":
+        normalized_logit_fn = normalized_logit
+        return partial(normalized_logit_fn)
     else: 
         raise ValueError(f"got bad metric_name: {metric_name}")
 
 # TODO TEST THIS
-def normalized_logit(clean_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False):
-    if labels.shape[-1] == 2:
-        # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
-        labels = labels[:, 0]
-    
-    clean_logits = get_logit_positions(clean_logits, input_length)
-    good_logits = torch.gather(clean_logits, -1, labels.to(clean_logits.device))
-    max_logits = clean_logits.max(dim=-1).values
+def normalized_logit(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False):
+    circuit_logits = get_logit_positions(circuit_logits, input_length)
+    circuit_outputs = circuit_logits
+    labels = torch.tensor(labels, dtype=torch.long, device=circuit_outputs.device)
+    good_logits = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))[:, 0]
+    max_logits = circuit_outputs.max(dim=-1).values
     results = good_logits / max_logits
     if loss:
         results = -results
@@ -160,3 +161,21 @@ def logit_diff_greater_than(circuit_logits: torch.Tensor, clean_logits: torch.Te
     if mean: 
         results = results.mean()
     return results
+
+
+def sequence_logprob(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False):
+    circuit_outputs = torch.nn.functional.log_softmax(circuit_logits, dim=-1)
+    # good_bad = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))
+    labels = torch.tensor(labels, dtype=torch.long, device=circuit_outputs.device)
+    logprobs = torch.zeros(circuit_outputs.shape(0))
+    for token_position in range(circuit_outputs.shape(1) - 1):
+        next_tokens = labels[:, token_position+1]
+        logits = circuit_outputs[:, token_position]
+        next_tokens_logprobs = torch.gather(logits, -1, next_tokens)
+        logprobs += next_tokens_logprobs
+    if loss:
+        # remember it's reversed to make it a loss
+        logprobs = -logprobs
+    if mean: 
+        logprobs = logprobs.mean()
+    return logprobs
