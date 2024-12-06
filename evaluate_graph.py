@@ -246,7 +246,8 @@ def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: 
 
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
-                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None):
+                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None,
+                              no_normalize:Optional[bool]=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics).mean().item()
     graph.apply_topn(0, True)
     corrupted_score = evaluate_graph(model, graph, dataloader, metrics, quiet=quiet, intervention=intervention, intervention_dataloader=intervention_dataloader).mean().item()
@@ -276,8 +277,10 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        quiet=quiet, intervention=intervention,
                                        intervention_dataloader=intervention_dataloader).mean().item()
-        faithfulness = (ablated_score - corrupted_score) / (baseline_score - corrupted_score)
-        print(faithfulness)
+        if no_normalize:
+            faithfulness = ablated_score
+        else:
+            faithfulness = (ablated_score - corrupted_score) / (baseline_score - corrupted_score)
         faithfulnesses.append(faithfulness)
     
     area_under = 0.
@@ -297,8 +300,7 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
         area_under += trapezoidal
     average = sum(faithfulnesses) / len(faithfulnesses)
-    print("Weighted edge counts:", weighted_edge_counts)
-    return area_under, area_from_100, average, faithfulnesses
+    return weighted_edge_counts, area_under, area_from_100, average, faithfulnesses
 
 
 def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):

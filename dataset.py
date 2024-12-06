@@ -11,6 +11,7 @@ def collate_EAP(xs):
     corrupted = list(corrupted)
     return clean, corrupted, labels
 
+
 class EAPDataset(Dataset):
     def __init__(self, filepath:str, task:str='greater-than'):
         self.task = task
@@ -39,10 +40,11 @@ class EAPDataset(Dataset):
     def to_dataloader(self, batch_size: int):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)
     
+
 class HFEAPDataset(Dataset):
     def __init__(self, url:str, tokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
                  control:Optional[bool]=False, counterfactual_type:Optional[str]=None,
-                 example_domain:Optional[str]=None):      
+                 example_domain:Optional[str]=None):
         self.task = task
         self.tokenizer = tokenizer
         self.control = control
@@ -53,14 +55,12 @@ class HFEAPDataset(Dataset):
                 self.counterfactual_type = "symbol_counterfactual"
             else:
                 self.counterfactual_type = counterfactual_type
-
         elif task == 'ewok':
             self.dataset = load_dataset(url, split="test")
-            if example_domain is not None:
-                self.example_domain = example_domain
-            else:
-                self.example_domain = "social-properties"
-        
+            self.example_domain = "social-properties" if example_domain is None else example_domain
+        elif task == 'arithmetic':
+            self.dataset = load_dataset(url, split=split)
+            self.example_domain = "+" if example_domain is None else example_domain
         else:
             self.dataset = load_dataset(url, split=split)
         
@@ -71,6 +71,8 @@ class HFEAPDataset(Dataset):
         
         # for when `control is True`
         self.answer_map = {}
+        self.seed_offset = 0
+
 
     def __len__(self):
         return len(self.dataset)
@@ -89,41 +91,57 @@ class HFEAPDataset(Dataset):
                           len(self.tokenizer(f" {x['metadata']['indirect_object']}", add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(f" {x['metadata']['random_c']}", add_special_tokens=False).input_ids)
             )
-            return filtered_dataset
         elif self.task == 'mcqa':
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["choices"]["label"][x["answerKey"]], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(str(x[self.counterfactual_type]["choices"]["label"][x[self.counterfactual_type]["answerKey"]]),
                                              add_special_tokens=False).input_ids)
             )
-            return filtered_dataset
         elif self.task == 'ewok':
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["Target1"], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(x["Target2"], add_special_tokens=False).input_ids) and
                           x["Domain"] == self.example_domain
             )
+        elif self.task == 'arithmetic':
+            filtered_dataset = self.dataset.filter(
+                lambda x: len(self.tokenizer(x["prompt_label"], add_special_tokens=False).input_ids) == 1 and
+                          x["op1_counterfactual"] is not None and x["operator"] == self.example_domain and
+                          len(self.tokenizer(x["op1_counterfactual_label"], add_special_tokens=False).input_ids) == 1
+            )
         else:
             raise ValueError(f"Unrecognized task: {self.task}")
-    
+        
+        return filtered_dataset
+
+
     def __getitem__(self, index):
+        def _make_control_answer(answer_idx, offset=0):
+            if offset != 0:
+                self.seed_offset += offset
+            random.seed(index + self.seed_offset)
+
+            if answer_idx not in self.answer_map:
+                random_token = random.randint(1000, self.tokenizer.vocab_size-1000)
+                existing_random_answers = set(self.answer_map.values())
+                # keep resampling until we obtain a unique answer. maintains bijectivity
+                while random_token in existing_random_answers:
+                    self.seed_offset += 1
+                    random.seed(index + self.seed_offset)
+                    random_token = random.randint(1000, self.tokenizer.vocab_size-1000)
+                self.answer_map[answer_idx] = random_token
+                
+            new_answer_idx = self.answer_map[answer_idx]
+            return new_answer_idx
+
         row = self.dataset[index]
         if self.task == 'ioi':
             counterfactual_col = 's2_io_flip_cf' if True else 'abc_cf'
             correct_idx = self.tokenizer(f" {row['metadata']['indirect_object']}", add_special_tokens=False).input_ids[0]
             incorrect_idx = self.tokenizer(f" {row['metadata']['subject']}", add_special_tokens=False).input_ids[0]
             if self.control:
-                random.seed(index)
-                if correct_idx in self.answer_map:
-                    correct_idx = self.answer_map[correct_idx]
-                else:
-                    self.answer_map[correct_idx] = random.randint(1000, self.tokenizer.vocab_size-1000)
-                    correct_idx = self.answer_map[correct_idx]
-                if incorrect_idx in self.answer_map:
-                    incorrect_idx = self.answer_map[incorrect_idx]
-                else:
-                    self.answer_map[incorrect_idx] = random.randint(1000, self.tokenizer.vocab_size-1000)
-                    incorrect_idx = self.answer_map[incorrect_idx]
+                correct_idx = _make_control_answer(correct_idx)
+                incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
             return row['text'], row['counterfactuals'][counterfactual_col], [correct_idx, incorrect_idx]
         
         elif self.task == 'mcqa':
@@ -135,22 +153,23 @@ class HFEAPDataset(Dataset):
             incorrect_ans = str(counterfactual_col["choices"]["label"][counterfactual_col["answerKey"]])
             incorrect_idx = self.tokenizer(incorrect_ans, add_special_tokens=False).input_ids[0]
             if self.control:
-                random.seed(index)
-                if correct_idx in self.answer_map:
-                    correct_idx = self.answer_map[correct_idx]
-                else:
-                    self.answer_map[correct_idx] = random.randint(1000, self.tokenizer.vocab_size-1000)
-                    correct_idx = self.answer_map[correct_idx]
-                if incorrect_idx in self.answer_map:
-                    incorrect_idx = self.answer_map[incorrect_idx]
-                else:
-                    self.answer_map[incorrect_idx] = random.randint(1000, self.tokenizer.vocab_size-1000)
-                    incorrect_idx = self.answer_map[incorrect_idx]
+                correct_idx = _make_control_answer(correct_idx)
+                incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
+            return clean_prompt, corrupted_prompt, [correct_idx, incorrect_idx]
+
+        elif self.task == 'arithmetic':
+            clean_prompt = row["prompt"]
+            corrupted_prompt = row["op1_counterfactual"]
+            correct_idx = self.tokenizer(row["prompt_label"], add_special_tokens=False).input_ids[0]
+            incorrect_idx = self.tokenizer(row["op1_counterfactual_label"], add_special_tokens=False).input_ids[0]
+            if self.control:
+                correct_idx = _make_control_answer(correct_idx)
+                incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
             return clean_prompt, corrupted_prompt, [correct_idx, incorrect_idx]
 
         elif self.task == 'ewok':
-            clean_prompt = row["Context1"]
-            counterfactual_prompt = row["Context2"]
+            clean_prompt = row["Context1"] + " " + row["Target1"]
+            counterfactual_prompt = row["Context1"] + " " + row["Target2"]
             correct_idxs = self.tokenizer(row["Target1"], add_special_tokens=False).input_ids
             incorrect_idxs = self.tokenizer(row["Target2"], add_special_tokens=False).input_ids
             if self.control:

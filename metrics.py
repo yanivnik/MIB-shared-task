@@ -55,6 +55,8 @@ def get_metric(metric_name: str,
     elif metric_name == "normalized_logit":
         normalized_logit_fn = normalized_logit
         return partial(normalized_logit_fn)
+    elif metric_name == "sequence_logprob":
+        return sequence_logprob
     else: 
         raise ValueError(f"got bad metric_name: {metric_name}")
 
@@ -166,10 +168,22 @@ def logit_diff_greater_than(circuit_logits: torch.Tensor, clean_logits: torch.Te
 def sequence_logprob(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False):
     circuit_outputs = torch.nn.functional.log_softmax(circuit_logits, dim=-1)
     # good_bad = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))
-    labels = torch.tensor(labels, dtype=torch.long, device=circuit_outputs.device)
-    logprobs = torch.zeros(circuit_outputs.shape(0))
-    for token_position in range(circuit_outputs.shape(1) - 1):
-        next_tokens = labels[:, token_position+1]
+    padded_labels = []
+    max_label_len = 0
+    for labelset in labels:
+        max_label_len = max(max_label_len, len(labelset[0]))
+    for labelset in labels:
+        padded_labels.append(labelset)
+        if len(labelset[0]) < max_label_len:
+            for i in range(max_label_len - len(labelset[0])):
+                padded_labels[-1][0].append(0)
+                padded_labels[-1][1].append(0)
+
+    labels = torch.tensor(padded_labels, dtype=torch.long, device=circuit_outputs.device)[:, 0, :]
+    print(labels)
+    logprobs = torch.zeros(circuit_outputs.shape[0])
+    for token_position in range(circuit_outputs.shape[1] - labels.shape[1], circuit_outputs.shape[1] - 1):
+        next_tokens = labels[:, token_position+1 - labels.shape[1]]
         logits = circuit_outputs[:, token_position]
         next_tokens_logprobs = torch.gather(logits, -1, next_tokens)
         logprobs += next_tokens_logprobs
