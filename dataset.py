@@ -49,12 +49,11 @@ class HFEAPDataset(Dataset):
         self.tokenizer = tokenizer
         self.control = control
 
+        self.counterfactual_type = counterfactual_type
         if task == 'mcqa':
             self.dataset = load_dataset(url, '2_answer_choices', split=split)
-            if counterfactual_type is None:
+            if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
-            else:
-                self.counterfactual_type = counterfactual_type
         elif task == 'ewok':
             self.dataset = load_dataset(url, split="test")
             self.example_domain = "social-properties" if example_domain is None else example_domain
@@ -136,13 +135,13 @@ class HFEAPDataset(Dataset):
 
         row = self.dataset[index]
         if self.task == 'ioi':
-            counterfactual_col = 's2_io_flip_cf' if True else 'abc_cf'
+            counterfactual_col = 's2_io_flip_counterfactual' if self.counterfactual_type is None else self.counterfactual_type
             correct_idx = self.tokenizer(f" {row['metadata']['indirect_object']}", add_special_tokens=False).input_ids[0]
             incorrect_idx = self.tokenizer(f" {row['metadata']['subject']}", add_special_tokens=False).input_ids[0]
             if self.control:
                 correct_idx = _make_control_answer(correct_idx)
                 incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
-            return row['text'], row['counterfactuals'][counterfactual_col], [correct_idx, incorrect_idx]
+            return row["prompt"], row[counterfactual_col]["prompt"], [correct_idx, incorrect_idx]
         
         elif self.task == 'mcqa':
             clean_prompt = row["prompt"]
