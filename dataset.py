@@ -1,9 +1,10 @@
 from typing import Optional
+import random
 
 from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset
 import pandas as pd
-import random
+from transformers import PreTrainedTokenizer
 
 def collate_EAP(xs):
     clean, corrupted, labels = zip(*xs)
@@ -40,12 +41,18 @@ class EAPDataset(Dataset):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)
     
 class HFEAPDataset(Dataset):
-    def __init__(self, url:str, tokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
+    task: str 
+    tokenizer: PreTrainedTokenizer
+    control: bool
+    model_name: Optional[str]
+
+    def __init__(self, url:str, tokenizer: PreTrainedTokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
                  control:Optional[bool]=False, counterfactual_type:Optional[str]=None,
-                 example_domain:Optional[str]=None):      
+                 example_domain:Optional[str]=None, model_name: Optional[str] = None):      
         self.task = task
         self.tokenizer = tokenizer
         self.control = control
+        self.model_name = model_name
 
         if task == 'mcqa':
             self.dataset = load_dataset(url, '2_answer_choices', split=split)
@@ -60,6 +67,10 @@ class HFEAPDataset(Dataset):
                 self.example_domain = example_domain
             else:
                 self.example_domain = "social-properties"
+
+        elif task == 'greater-than':
+            assert model_name is not None, "For greater-than you must specify the model name, but it is None"
+            self.dataset = load_dataset(url, split=split)
         
         else:
             self.dataset = load_dataset(url, split=split)
@@ -89,27 +100,32 @@ class HFEAPDataset(Dataset):
                           len(self.tokenizer(f" {x['metadata']['indirect_object']}", add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(f" {x['metadata']['random_c']}", add_special_tokens=False).input_ids)
             )
-            return filtered_dataset
         elif self.task == 'mcqa':
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["choices"]["label"][x["answerKey"]], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(str(x[self.counterfactual_type]["choices"]["label"][x[self.counterfactual_type]["answerKey"]]),
                                              add_special_tokens=False).input_ids)
             )
-            return filtered_dataset
         elif self.task == 'ewok':
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["Target1"], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(x["Target2"], add_special_tokens=False).input_ids) and
                           x["Domain"] == self.example_domain
             )
+        elif self.task == 'greater-than':
+            filtered_dataset = self.dataset.filter(
+                lambda x: len(self.tokenizer(x["clean"], add_special_tokens=False).input_ids) ==
+                          len(self.tokenizer(x["corrupted"], add_special_tokens=False).input_ids)
+            )
         else:
             raise ValueError(f"Unrecognized task: {self.task}")
+
+        return filtered_dataset
     
     def __getitem__(self, index):
         row = self.dataset[index]
         if self.task == 'ioi':
-            counterfactual_col = 's2_io_flip_cf' if True else 'abc_cf'
+            counterfactual_col = 's2_io_flip_counterfactual' if True else 'abc_counterfactual'
             correct_idx = self.tokenizer(f" {row['metadata']['indirect_object']}", add_special_tokens=False).input_ids[0]
             incorrect_idx = self.tokenizer(f" {row['metadata']['subject']}", add_special_tokens=False).input_ids[0]
             if self.control:
@@ -124,7 +140,7 @@ class HFEAPDataset(Dataset):
                 else:
                     self.answer_map[incorrect_idx] = random.randint(1000, self.tokenizer.vocab_size-1000)
                     incorrect_idx = self.answer_map[incorrect_idx]
-            return row['text'], row['counterfactuals'][counterfactual_col], [correct_idx, incorrect_idx]
+            return row['prompt'], row[counterfactual_col]['prompt'], [correct_idx, incorrect_idx]
         
         elif self.task == 'mcqa':
             clean_prompt = row["prompt"]
@@ -156,6 +172,16 @@ class HFEAPDataset(Dataset):
             if self.control:
                 raise NotImplementedError("Error: controls are not implemented for multi-token outputs.")
             return clean_prompt, counterfactual_prompt, [correct_idxs, incorrect_idxs]
+
+        elif self.task == 'greater-than':
+            year = row['year']
+            if 'gpt2' in self.model_name:
+                label = [int(year[2:])]
+            elif 'Llama-3' in self.model_name:
+                label = [int(year[:3]), int(year[3:])]
+            elif 'gemma-2' in self.model_name or 'Qwen' in self.model_name:
+                label = [int(year[2]), int(year[3])]
+            return row['clean'], row['corrupted'], label
 
     def to_dataloader(self, batch_size: int):
         return DataLoader(self, batch_size=batch_size, collate_fn=collate_EAP)

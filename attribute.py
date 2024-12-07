@@ -449,7 +449,7 @@ def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, me
     assert model.cfg.use_split_qkv_input, "Model must be configured to use split qkv inputs (model.cfg.use_split_qkv_input)"
     assert model.cfg.use_hook_mlp_in, "Model must be configured to use hook MLP in (model.cfg.use_hook_mlp_in)"
     if model.cfg.n_key_value_heads is not None:
-        assert model.cfg.ungroup_grouped_query_attention, "Model must be configured to ungroup grouped attention (model.cfg.ungroup_grouped_attention)"
+        assert model.cfg.ungroup_grouped_query_attention, "Model must be configured to ungroup grouped attention (model.cfg.ungroup_grouped_query_attention = True)"
     
     if aggregation not in allowed_aggregations:
         raise ValueError(f'aggregation must be in {allowed_aggregations}, but got {aggregation}')

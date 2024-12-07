@@ -11,7 +11,8 @@ from transformer_lens import HookedTransformer
 def get_metric(metric_name: str, 
                task: str, 
                tokenizer: Optional[PreTrainedTokenizer] = None, 
-               model: Optional[HookedTransformer] = None):
+               model: Optional[HookedTransformer] = None,
+               model_name: Optional[str] = None):
     """
     Get a metric function based on the metric name and task.
     The metric function basic signature is:
@@ -47,8 +48,9 @@ def get_metric(metric_name: str,
         prob = (metric_name == 'prob_diff')
         if 'greater-than' in task:
             assert tokenizer is not None or model is not None, "Either tokenizer or model must be set for greater-than and prob / logit diff"
+            assert model_name is not None, "Model name must be set for greater-than"
             tokenizer = tokenizer or model.tokenizer
-            logit_diff_fn = partial(logit_diff_greater_than, year_indices=get_year_indices(tokenizer))
+            logit_diff_fn = partial(logit_diff_greater_than, indices=get_year_indices(model_name, tokenizer), model_name=model_name)
         else:
             logit_diff_fn = logit_diff
         return partial(logit_diff_fn, prob=prob)
@@ -91,10 +93,21 @@ def topk_accuracy(logits: torch.Tensor, corrupted_logits: torch.Tensor, input_le
     return topk_acc
 
 
-def get_logit_positions(logits: torch.Tensor, input_length: torch.Tensor):
+def get_logit_positions(logits: torch.Tensor, input_length: torch.Tensor, position: int = -1) -> torch.Tensor:
+    """Get the logits at a specific position of the input sequence, relative to the real (unpadded) input length; by default, get the last position
+
+    Args:
+        logits (torch.Tensor): the logits to index into
+        input_length (torch.Tensor): the real (unpadded) length of each sequence
+        position (int, optional): The position to get. If < 0, indexes backwards from the real unpadded input length. Defaults to -1.
+
+    Returns:
+        torch.Tensor: _description_
+    """
+    pos = input_length + position if position < 0 else position
     batch_size = logits.size(0)
     idx = torch.arange(batch_size, device=logits.device)
-    logits = logits[idx, input_length - 1]
+    logits = logits[idx, pos]
     return logits
 
 
@@ -134,27 +147,103 @@ def logit_diff(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_l
         results = results.mean()
     return results
 
+gt_indices_dict = {}
+def get_year_indices(model_name: str, tokenizer: PreTrainedTokenizer) -> torch.Tensor:
+    if model_name not in gt_indices_dict:
+        if 'gpt2' in model_name:
+            # GPT-2 tokenizes 4-digit years into groups of 2 and 2; we care about the latter 2
+            gt_indices_dict[model_name] = torch.tensor([tokenizer(f'{year:02d}', add_special_tokens=False).input_ids[0] for year in range(100)])
+        elif 'Llama-3' in model_name:
+            # Llama-3 tokenizes 4-digit years into groups of 3 and 1; we care about both
+            three_digit_indices = torch.tensor([tokenizer(f'{digit:03d}', add_special_tokens=False).input_ids[0] for digit in range(1000)])
+            single_digit_indices = torch.tensor([tokenizer(f'{digit}', add_special_tokens=False).input_ids[-1] for digit in range(10)])
+            gt_indices_dict[model_name] = (three_digit_indices, single_digit_indices)
+        elif 'gemma-2' in model_name or 'Qwen' in model_name:
+            # Gemma-2 and Qwen tokenize 4 digit years into 4 individual digits
+            gt_indices_dict[model_name] = torch.tensor([tokenizer(f'{digit}', add_special_tokens=False).input_ids[-1] for digit in range(10)])
+        else:
+            raise ValueError(f"Model name '{model_name}' not recognized")
+    return gt_indices_dict[model_name]
 
-def get_year_indices(tokenizer: PreTrainedTokenizer):
-    return torch.tensor([tokenizer(f'{year:02d}', add_special_tokens=False).input_ids[0] for year in range(100)])
 
+def logit_diff_greater_than(circuit_logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, model_name: str, indices: Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]], mean:bool=True, prob:bool=False, loss:bool=False):
+    """Computes greater-than, which may involve multiple tokens on non-GPT-2 models. Note that we only care about the last two digits, even if the model
+    doesn't tokenize the start / end year into XXYY, so we may have to account for this.
 
-def logit_diff_greater_than(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False, year_indices=None):
-    # Prob diff (negative, since it's a loss)
-    circuit_logits = get_logit_positions(circuit_logits, input_length)
-    circuit_outputs = torch.softmax(circuit_logits, dim=-1) if prob else circuit_logits
-    # print(circuit_outputs)
-    # print(circuit_outputs[:, tuple(year_indices)])
-    circuit_outputs = circuit_outputs[:, year_indices]
+    Args:
+        circuit_logits (torch.Tensor): The circuit logits
+        corrupted_logits (torch.Tensor): (unused)
+        input_length (torch.Tensor): _description_
+        labels (torch.Tensor): _description_
+        model_name (str): _description_
+        indices (torch.Tensor): The indices of the relevant years (may be either a torch.Tensor or Tuple thereof)
+        mean (bool, optional): _description_. Defaults to True.
+        prob (bool, optional): _description_. Defaults to False.
+        loss (bool, optional): _description_. Defaults to False.
+
+    Raises:
+        ValueError: _description_
+        ValueError: _description_
+
+    Returns:
+        _type_: _description_
+    """
+
+    if not prob:
+        raise ValueError("Can't compute multi-token logit diff")
+
+    probs = torch.softmax(circuit_logits, dim=-1)
 
     results = []
-    if prob:
-        for prob, year in zip(circuit_outputs, labels):
-            results.append(prob[year + 1 :].sum() - prob[: year + 1].sum())
-    else:
-        for logit, year in zip(circuit_outputs, labels):
-            results.append(logit[year + 1 :].mean() - logit[: year + 1].mean())
+    if 'gpt2' in model_name:
+        # GPT-2 tokenizes 4-digit years into groups of 2 and 2; we care about the latter 2
+        probs_yr = get_logit_positions(probs, input_length, position=-2)
+        year_indices = indices
+        for year_probs, (year,) in zip(probs_yr[:, year_indices], labels):
+            good_year_probs = year_probs[year+1:]
+            bad_year_probs = year_probs[:year+1]
 
+            good_probs = good_year_probs.sum()
+            bad_probs = bad_year_probs.sum()
+            results.append(good_probs - bad_probs)
+
+    elif 'Llama-3' in model_name:
+        # Llama-3 tokenizes 4-digit years into groups of 3 and 1; we care about both
+        # first is indices for the three-digit millenium, century, and decade. second is for the single digit year
+        probs_dec = get_logit_positions(probs, input_length, position=-3)
+        probs_yr = get_logit_positions(probs, input_length, position=-2)
+        decade_indices, digit_indices = indices
+        for decade_probs, year_probs, (decade, year) in zip(probs_dec[:, decade_indices], probs_yr[:, digit_indices], labels):
+            decade_prob = decade_probs[decade]
+            good_decade_probs = decade_probs[decade+1:]
+            bad_decade_probs = decade_probs[:decade]
+
+            good_year_probs = year_probs[year+1:]
+            bad_year_probs = year_probs[:year+1]
+
+            good_probs = good_decade_probs.sum() + decade_prob * good_year_probs.sum()
+            bad_probs = bad_decade_probs.sum() + decade_prob * bad_year_probs.sum()
+            results.append(good_probs - bad_probs)
+
+    elif 'gemma-2' in model_name or 'Qwen' in model_name:
+        # Gemma-2 and Qwen tokenize 4 digit years into 4 individual digits
+        probs_dec = get_logit_positions(probs, input_length, position=-3)
+        probs_yr = get_logit_positions(probs, input_length, position=-2)
+        digit_indices = indices
+        for decade_probs, year_probs, (decade, year) in zip(probs_dec[:, digit_indices], probs_yr[:, digit_indices], labels):
+            decade_prob = decade_probs[decade]
+            good_decade_probs = decade_probs[decade+1:]
+            bad_decade_probs = decade_probs[:decade]
+
+            good_year_probs = year_probs[year+1:]
+            bad_year_probs = year_probs[:year+1]
+
+            good_probs = good_decade_probs.sum() + decade_prob * good_year_probs.sum()
+            bad_probs = bad_decade_probs.sum() + decade_prob * bad_year_probs.sum()
+            results.append(good_probs - bad_probs)
+    else:
+        raise ValueError(f"Model name '{model_name}' not recognized")
+            
     results = torch.stack(results)
     if loss:
         results = -results
