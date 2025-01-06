@@ -1,4 +1,4 @@
-from typing import Callable, List, Union, Optional, Literal
+from typing import Callable, List, Union, Optional, Literal, Tuple
 from functools import partial
 
 import torch
@@ -443,6 +443,113 @@ def get_scores_clean_corrupted(model: HookedTransformer, graph: Graph, dataloade
 
     return scores
 
+def get_scores_information_flow_routes(model: HookedTransformer, graph: Graph, dataloader: DataLoader, quiet=False) -> torch.Tensor:
+    """Gets scores using Ferrando et al.'s (2024) information flow routes method.
+
+    Args:
+        model (HookedTransformer): the model to attribute
+        graph (Graph): the graph to attribute
+        dataloader (DataLoader): the data over which to attribute
+        metric (Callable[[Tensor], Tensor]): the metric to attribute with respect to
+        quiet (bool, optional): whether to silence tqdm. Defaults to False.
+
+    Returns:
+        Tensor: scores based on information flow routes
+    """
+    # I could do some hacky overriding of make_hooks_and_matrices here but I will not
+    scores = torch.zeros((graph.n_forward, graph.n_backward), device='cuda', dtype=model.cfg.dtype)    
+
+    def make_hooks(n_pos: int, input_lengths: torch.Tensor) -> List[Tuple[str, Callable]]:
+        output_activations = torch.zeros((batch_size, n_pos, graph.n_forward, model.cfg.d_model), device=model.cfg.device, dtype=model.cfg.dtype)
+
+        def output_hook(index, activations, hook):
+            try:
+                acts = activations.detach()
+                output_activations[:, :, index] = acts
+            except RuntimeError as e:
+                print(hook.name, output_activations[:, :, index].size(), output_activations.size())
+                raise e
+
+        # compute the score directly, without saving the input activations
+        def input_hook(prev_index, bwd_index, input_lengths, activations, hook):
+            acts = activations.detach()
+            try:
+                if acts.ndim == 3:
+                    acts = acts.unsqueeze(2)
+                # acts : batch pos backward hidden
+                # output acts: batch pos forward hidden
+                # add forward and backwards dimensions to acts and output acts respectively
+                acts = acts.unsqueeze(2)
+                unsqueezed_output_activations = output_activations.unsqueeze(3)
+
+                # acts : batch pos 1 backward hidden
+                # output acts: batch pos forward 1 hidden
+                proximity = torch.clamp(- torch.linalg.vector_norm(unsqueezed_output_activations[:, :, :prev_index] - acts, ord=1, dim=-1) + torch.linalg.vector_norm(acts, ord=1, dim=-1), min=0)
+                importance = proximity / torch.sum(proximity, dim=2, keepdim=True)
+                # importance: batch pos forward backward
+                # aggregate over positions via sum/mean to get importance: forward backward
+                # first mask out importances for padding positions
+                max_len = input_lengths.max()
+                mask = torch.arange(max_len, device=input_lengths.device,
+                            dtype=input_lengths.dtype).expand(len(input_lengths), max_len) < input_lengths.unsqueeze(1)
+                mask = mask.unsqueeze(-1).unsqueeze(-1)
+                # print(importance.size(), mask.size())
+                importance *= mask
+                importance = importance.sum(1) / input_lengths.view(-1,1,1) # mean over positions
+                importance = importance.sum(0)
+
+                # importance: forward backward
+                # squeezing backward dim in case it isn't real (i.e. it's an MLP)
+                importance = importance.squeeze(1)
+                scores[:prev_index, bwd_index] += importance
+
+            except RuntimeError as e:
+                print(hook.name, unsqueezed_output_activations[:, :, prev_index].size(), acts.size())
+                raise e
+            
+        hooks = []
+        node = graph.nodes['input']
+        fwd_index = graph.forward_index(node)
+        hooks.append((node.out_hook, partial(output_hook, fwd_index)))
+        
+        for layer in range(graph.cfg['n_layers']):
+            node = graph.nodes[f'a{layer}.h0']
+            fwd_index = graph.forward_index(node)
+            hooks.append((node.out_hook, partial(output_hook, fwd_index)))
+            prev_index = graph.prev_index(node)
+            for i, letter in enumerate('qkv'):
+                bwd_index = graph.backward_index(node, qkv=letter)
+                hooks.append((node.qkv_inputs[i], partial(input_hook, prev_index, bwd_index, input_lengths)))
+
+            node = graph.nodes[f'm{layer}']
+            fwd_index = graph.forward_index(node)
+            bwd_index = graph.backward_index(node)
+            prev_index = graph.prev_index(node)
+            hooks.append((node.out_hook, partial(output_hook, fwd_index)))
+            hooks.append((node.in_hook, partial(input_hook, prev_index, bwd_index, input_lengths)))
+            
+        node = graph.nodes['logits']
+        prev_index = graph.prev_index(node)
+        bwd_index = graph.backward_index(node)
+        hooks.append((node.in_hook, partial(input_hook, prev_index, bwd_index, input_lengths)))
+        return hooks
+    
+    total_items = 0
+    dataloader = dataloader if quiet else tqdm(dataloader)
+    for clean, _, _ in dataloader:
+        batch_size = len(clean)
+        total_items += batch_size
+        clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+
+        hooks = make_hooks(n_pos, input_lengths)
+        with torch.inference_mode():
+            with model.hooks(fwd_hooks=hooks):
+                _ = model(clean_tokens, attention_mask=attention_mask)
+
+    scores /= total_items
+
+    return scores
+
 allowed_aggregations = {'sum', 'mean'}#, 'l2'}        
 def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metric: Callable[[Tensor], Tensor], method: Literal['EAP', 'EAP-IG-inputs', 'clean-corrupted', 'EAP-IG-activations'], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', aggregation='sum', ig_steps: Optional[int]=None, intervention_dataloader: Optional[DataLoader]=None, quiet=False):
     assert model.cfg.use_attn_result, "Model must be configured to use attention result (model.cfg.use_attn_result)"
@@ -468,6 +575,8 @@ def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, me
         scores = get_scores_clean_corrupted(model, graph, dataloader, metric, quiet=quiet)
     elif method == 'EAP-IG-activations':
         scores = get_scores_ig_activations(model, graph, dataloader, metric, steps=ig_steps, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=quiet)
+    elif method == 'information-flow-routes':
+        scores = get_scores_information_flow_routes(model, graph, dataloader, quiet=quiet)
     else:
         raise ValueError(f"integrated_gradients must be in ['EAP', 'EAP-IG-inputs', 'EAP-IG-activations'], but got {method}")
 

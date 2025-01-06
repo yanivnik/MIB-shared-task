@@ -174,6 +174,9 @@ class Edge:
     @in_graph.setter
     def in_graph(self, value):
         self.graph.in_graph[self.matrix_index] = value
+
+    def __lt__(self, other):
+        return self.score < other.score
         
 class GraphConfig(dict):
     def __init__(self, *args, **kwargs):
@@ -521,21 +524,20 @@ class Graph:
             self.nodes_in_graph *= False
             self.in_graph *= False
 
-        def abs_id(s: float):
-            return abs(s) if absolute else s
+        def edge_score(s: float):
+            return -abs(s) if absolute else -s
 
-        candidate_edges = sorted([edge for edge in self.edges.values() if edge.child.in_graph], key = lambda edge: abs_id(edge.score), reverse=True)
-
-        edges = heapq.merge(candidate_edges, key = lambda edge: abs_id(edge.score), reverse=True)
+        edges = [(edge_score(edge.score), edge) for edge in self.nodes['logits'].parent_edges]
+        heapq.heapify(edges)
         while n_edges > 0:
             n_edges -= 1
-            top_edge = next(edges)
+            _, top_edge = heapq.heappop(edges)
             top_edge.in_graph = True
             parent = top_edge.parent
             if not parent.in_graph:
                 parent.in_graph = True
-                parent_parent_edges = sorted([parent_edge for parent_edge in parent.parent_edges], key = lambda edge: abs_id(edge.score), reverse=True)
-                edges = heapq.merge(edges, parent_parent_edges, key = lambda edge: abs_id(edge.score), reverse=True)
+                for edge in parent.parent_edges:
+                    heapq.heappush(edges, (edge_score(edge.score), edge))
         
         if prune:
             self.prune()

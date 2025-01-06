@@ -247,7 +247,7 @@ def evaluate_baseline(model: HookedTransformer, dataloader:DataLoader, metrics: 
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
                               level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None,
-                              no_normalize:Optional[bool]=False):
+                              no_normalize:Optional[bool]=False, apply_greedy:bool=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics).mean().item()
     graph.apply_topn(0, True)
     corrupted_score = evaluate_graph(model, graph, dataloader, metrics, quiet=quiet, intervention=intervention, intervention_dataloader=intervention_dataloader).mean().item()
@@ -269,7 +269,11 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         this_graph = graph
         curr_num_items = int(pct * n_scored_items)
         print(f"Computing results for {pct*100}% of {level}s (N={curr_num_items})")
-        this_graph.apply_topn(curr_num_items, absolute, level=level, prune=True)
+        if apply_greedy:
+            assert level == 'edge', "Greedy application only supported for edge-level evaluation"
+            this_graph.apply_greedy(curr_num_items, absolute=absolute, prune=True)
+        else:
+            this_graph.apply_topn(curr_num_items, absolute, level=level, prune=True)
         
         weighted_edge_count = this_graph.weighted_edge_count()
         weighted_edge_counts.append(weighted_edge_count)
