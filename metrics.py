@@ -254,8 +254,35 @@ def logit_diff_greater_than(circuit_logits: torch.Tensor, corrupted_logits: torc
     return results
 
 
+def _batch_index_matrix(M, a):
+    """
+    Efficiently index a 3D tensor M (B x L x |V|) using batched indices from a
+    
+    Args:
+        M: Tensor of shape (B, L, V)
+        a: Tensor of shape (B, K) containing indices into the V dimension for each batch
+    
+    Returns:
+        Tensor of shape (B, K) containing the indexed values
+    """
+    B, L, V = M.shape
+    _, K = a.shape
+    
+    # Create indices for the batch dimension
+    batch_idx = torch.arange(B).unsqueeze(1).expand(B, K)
+    
+    # Create indices for the L dimension
+    L_idx = torch.arange(K).unsqueeze(0).expand(B, K)
+    
+    # Index the matrix using advanced indexing
+    result = M[batch_idx, L_idx, a]
+    
+    return result
+
+
 def sequence_logprob(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, loss=False):
     circuit_outputs = torch.nn.functional.log_softmax(circuit_logits, dim=-1)
+    print("circuit outputs shape:", circuit_outputs.shape)
     # good_bad = torch.gather(circuit_outputs, -1, labels.to(circuit_outputs.device))
     padded_labels = []
     max_label_len = 0
@@ -269,13 +296,11 @@ def sequence_logprob(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, i
                 padded_labels[-1][1].append(0)
 
     labels = torch.tensor(padded_labels, dtype=torch.long, device=circuit_outputs.device)[:, 0, :]
-    print(labels)
-    logprobs = torch.zeros(circuit_outputs.shape[0])
-    for token_position in range(circuit_outputs.shape[1] - labels.shape[1], circuit_outputs.shape[1] - 1):
-        next_tokens = labels[:, token_position+1 - labels.shape[1]]
-        logits = circuit_outputs[:, token_position]
-        next_tokens_logprobs = torch.gather(logits, -1, next_tokens)
-        logprobs += next_tokens_logprobs
+    circuit_logits_targetseq = circuit_outputs[:, -labels.shape[-1]:, :]
+    print("labels shape:", labels.shape)
+    logprobs = _batch_index_matrix(circuit_logits, labels)
+    seq_logprob = logprobs.sum(dim=-1)  # one sequence logprob per element in batch
+    print("fn output shape:", seq_logprob.shape)
     if loss:
         # remember it's reversed to make it a loss
         logprobs = -logprobs

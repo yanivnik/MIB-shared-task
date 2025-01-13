@@ -61,16 +61,19 @@ class HFEAPDataset(Dataset):
             self.dataset = load_dataset(url, '2_answer_choices', split=split)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
+        elif task == 'arc':
+            self.dataset = load_dataset(url, split=split)
+            if self.counterfactual_type is None:
+                self.counterfactual_type = "symbol_counterfactual"
         elif task == 'ewok':
             self.dataset = load_dataset(url, split="test")
             self.example_domain = "social-properties" if example_domain is None else example_domain
         elif task == 'arithmetic':
             self.dataset = load_dataset(url, split=split)
-
+            self.example_domain = "+" if example_domain is None else example_domain
         elif task == 'greater-than':
             assert model_name is not None, "For greater-than you must specify the model name, but it is None"
             self.dataset = load_dataset(url, split=split)
-            self.example_domain = "+" if example_domain is None else example_domain
         else:
             self.dataset = load_dataset(url, split=split)
         
@@ -115,14 +118,21 @@ class HFEAPDataset(Dataset):
             )
         elif self.task == 'arithmetic':
             filtered_dataset = self.dataset.filter(
-                lambda x: len(self.tokenizer(x["prompt_label"], add_special_tokens=False).input_ids) == 1 and
-                          x["op1_counterfactual"] is not None and x["operator"] == self.example_domain and
-                          len(self.tokenizer(x["op1_counterfactual_label"], add_special_tokens=False).input_ids) == 1
+                lambda x: len(self.tokenizer(str(x["label"]), add_special_tokens=False).input_ids) == 1 and
+                          x["random_counterfactual"] is not None and
+                          x["random_counterfactual"]["prompt"] is not None and x["operator"] == self.example_domain and
+                          len(self.tokenizer(str(x["random_counterfactual"]["label"]), add_special_tokens=False).input_ids) == 1
             )
         elif self.task == 'greater-than':
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["clean"], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(x["corrupted"], add_special_tokens=False).input_ids)
+            )
+        elif self.task == 'arc':
+            filtered_dataset = self.dataset.filter(
+                lambda x: len(self.tokenizer(x["choices"]["label"][x["answerKey"]], add_special_tokens=False).input_ids) ==
+                          len(self.tokenizer(str(x[self.counterfactual_type]["choices"]["label"][x[self.counterfactual_type]["answerKey"]]),
+                                             add_special_tokens=False).input_ids)
             )
         else:
             raise ValueError(f"Unrecognized task: {self.task}")
@@ -158,7 +168,7 @@ class HFEAPDataset(Dataset):
                 incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
             return row["prompt"], row[counterfactual_col]["prompt"], [correct_idx, incorrect_idx]
         
-        elif self.task == 'mcqa':
+        elif self.task in ('mcqa', 'arc'):
             clean_prompt = row["prompt"]
             correct_idx = self.tokenizer(row["choices"]["label"][row["answerKey"]], add_special_tokens=False).input_ids[0]
             # counterfactual_cols = [k for k in list(row.keys()) if "_counterfactual" in k]
@@ -173,9 +183,9 @@ class HFEAPDataset(Dataset):
 
         elif self.task == 'arithmetic':
             clean_prompt = row["prompt"]
-            corrupted_prompt = row["op1_counterfactual"]
-            correct_idx = self.tokenizer(row["prompt_label"], add_special_tokens=False).input_ids[0]
-            incorrect_idx = self.tokenizer(row["op1_counterfactual_label"], add_special_tokens=False).input_ids[0]
+            corrupted_prompt = row["random_counterfactual"]["prompt"]
+            correct_idx = self.tokenizer(str(row["label"]), add_special_tokens=False).input_ids[0]
+            incorrect_idx = self.tokenizer(str(row["random_counterfactual"]["label"]), add_special_tokens=False).input_ids[0]
             if self.control:
                 correct_idx = _make_control_answer(correct_idx)
                 incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
