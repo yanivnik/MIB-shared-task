@@ -19,13 +19,17 @@ model.cfg.use_hook_mlp_in = True
 path = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
 task = 'ioi'
 ablation = 'cf'
-name = 'ugs'
+name = 'ugs_mib'
 # lamb = 0.002
 
 lambs = [.01, 0.002, .001, .0005, .0002, .0001, 1e-5, 5e-6, 2e-6, 1e-6]
 # lambs = [0.001]
+lambs = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
 
-dataset = HFEAPDataset("danaarad/ioi_dataset", model.tokenizer, task="ioi", num_examples=100)
+with open('./hf_token.txt', 'r') as f:
+    hf_token = f.read().strip()
+
+dataset = HFEAPDataset("mech-interp-bench/ioi", model.tokenizer, task="ioi", num_examples=100, hf_token=hf_token)
 dataloader = dataset.to_dataloader(20)
 metric_fn = get_metric("logit_diff", "ioi", model.tokenizer, model)
 
@@ -52,7 +56,7 @@ fig.show()
 import plotly.express as px
 import pandas as pd
 # make line plot with results
-percentages = (.001, .002, .005, .01, .02, .05, .1, .2, .5, 1)
+percentages = (.1, .2, .5, 1, 2, 5, 10, 20, 50, 100)
 
 # Prepare data for plotting
 data = []

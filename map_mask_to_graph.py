@@ -8,10 +8,10 @@ from graph import Graph
 path = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
 task = 'ioi'
 ablation = 'cf'
-name = 'ugs'
+name = 'ugs_mib'
 # lamb = 0.001
 lambs = [0.01, 0.002, .001, .0005, .0002, .0001, 1e-5, 5e-6, 2e-6, 1e-6]
-# lambs = [0.001]
+lambs = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
 
 # load an empty graph to use as reference
 model_name = "gpt2-small"

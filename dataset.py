@@ -50,7 +50,7 @@ class HFEAPDataset(Dataset):
 
     def __init__(self, url:str, tokenizer: PreTrainedTokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
                  control:Optional[bool]=False, counterfactual_type:Optional[str]=None,
-                 example_domain:Optional[str]=None, model_name: Optional[str] = None):      
+                 example_domain:Optional[str]=None, model_name: Optional[str] = None, hf_token: Optional[str] = None):      
         self.task = task
         self.tokenizer = tokenizer
         self.control = control
@@ -58,24 +58,24 @@ class HFEAPDataset(Dataset):
 
         self.counterfactual_type = counterfactual_type
         if task == 'mcqa':
-            self.dataset = load_dataset(url, '2_answer_choices', split=split)
+            self.dataset = load_dataset(url, '2_answer_choices', split=split, token=hf_token)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
         elif task == 'arc':
-            self.dataset = load_dataset(url, split=split)
+            self.dataset = load_dataset(url, split=split, token=hf_token)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
         elif task == 'ewok':
             self.dataset = load_dataset(url, split="test")
             self.example_domain = "social-properties" if example_domain is None else example_domain
         elif task == 'arithmetic':
-            self.dataset = load_dataset(url, split=split)
+            self.dataset = load_dataset(url, split=split, token=hf_token)
             self.example_domain = "+" if example_domain is None else example_domain
         elif task == 'greater-than':
             assert model_name is not None, "For greater-than you must specify the model name, but it is None"
-            self.dataset = load_dataset(url, split=split)
+            self.dataset = load_dataset(url, split=split, token=hf_token)
         else:
-            self.dataset = load_dataset(url, split=split)
+            self.dataset = load_dataset(url, split=split, token=hf_token)
         
         self.dataset = self.filter_dataset()
         #self.dataset = self.shuffle()
