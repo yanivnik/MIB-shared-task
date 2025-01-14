@@ -43,7 +43,7 @@ def get_metric(metric_name: str,
             k = 1
         else:
             k = int(metric_name.split('-')[-1])
-        return partial(topk_accuracy, k=k)
+        return partial(topk_accuracy, k=k, device=model.cfg.device)
     elif metric_name == 'logit_diff' or metric_name == 'prob_diff':
         prob = (metric_name == 'prob_diff')
         if 'greater-than' in task:
@@ -77,9 +77,9 @@ def normalized_logit(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, i
     return results
 
 # TODO TEST THIS
-def topk_accuracy(logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1):
+def topk_accuracy(logits: torch.Tensor, corrupted_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean: bool=True, loss: bool=False, k: int=1, device: str='cuda'):
     if type(labels) == tuple:
-        labels = torch.Tensor(labels).to("cuda")
+        labels = torch.Tensor(labels).to(device)
     if labels.shape[-1] == 2:
         # If labels have both clean (good) and corrupt (bad) labels, take only the clean one
         labels = labels[:, 0]

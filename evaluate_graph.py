@@ -281,6 +281,8 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         ablated_score = evaluate_graph(model, this_graph, dataloader, metrics,
                                        quiet=quiet, intervention=intervention,
                                        intervention_dataloader=intervention_dataloader).mean().item()
+        
+        print(f"Baseline: {baseline_score:.4f}, Corrupted: {corrupted_score:.4f}, Ablated: {ablated_score:.4f}")
         if no_normalize:
             faithfulness = ablated_score
         else:
