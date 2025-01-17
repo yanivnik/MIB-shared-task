@@ -436,7 +436,7 @@ class Graph:
         if level == 'neuron':
             scored_neurons =  ~torch.isnan(self.neurons_scores)
             n_scored_neurons = scored_neurons.sum()
-            assert  n <= scored_neurons, f"Requested n ({n}) is greater than the number of scored neurons ({n_scored_neurons})"
+            assert  n <= n_scored_neurons, f"Requested n ({n}) is greater than the number of scored neurons ({n_scored_neurons})"
             neuron_score_copy = self.neurons_scores.clone()
             if absolute:
                 neuron_score_copy = torch.abs(neuron_score_copy)
@@ -717,7 +717,8 @@ class Graph:
         layout: str="dot",
         seed: Optional[int] = None
     ) -> pgv.AGraph:
-        """Export the graph as a .png file
+        """
+        Export the graph as a .png file
         
         Filename: the filename to save the graph to
         Colorscheme: a cmap colorscheme
