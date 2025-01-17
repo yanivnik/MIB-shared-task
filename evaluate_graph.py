@@ -9,11 +9,11 @@ from transformer_lens import HookedTransformer
 from tqdm import tqdm
 from einops import einsum
 
-from attribute import tokenize_plus, make_hooks_and_matrices, compute_mean_activations
+from utils import tokenize_plus, make_hooks_and_matrices, compute_mean_activations
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
 
 
-def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], quiet=False, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None) -> Union[torch.Tensor, List[torch.Tensor]]:
+def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoader, metrics: Union[Callable[[Tensor],Tensor], List[Callable[[Tensor], Tensor]]], quiet=False, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None, means: Optional[Tensor] = None) -> Union[torch.Tensor, List[torch.Tensor]]:
     """Evaluate a circuit (i.e. a graph where only some nodes are false, probably created by calling graph.apply_threshold). You probably want to prune beforehand to make sure your circuit is valid.
 
     Args:
@@ -24,6 +24,7 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
         quiet (bool, optional): Whether to silence the tqdm progress bar. Defaults to False.
         intervention (Literal[&#39;patching&#39;, &#39;zero&#39;, &#39;mean&#39;,&#39;mean, optional): Which ablation to evaluate with respect to. 'patching' is an interchange intervention; mean-positional takes the positional mean over the given dataset. Defaults to 'patching'.
         intervention_dataloader (Optional[DataLoader], optional): The dataset to take the mean over. Must be set if intervention is mean or mean-positional. Defaults to None.
+        means: Optional[Tensor]: The means to use for the mean intervention. If not provided, they will be computed from the intervention_dataloader.
 
     Returns:
         Union[torch.Tensor, List[torch.Tensor]]: A tensor (or list thereof) of faithfulness scores; if a list, each list entry corresponds to a metric in the input list
@@ -35,12 +36,13 @@ def evaluate_graph(model: HookedTransformer, graph: Graph, dataloader: DataLoade
     assert intervention in ['patching', 'zero', 'mean', 'mean-positional'], f"Invalid intervention: {intervention}"
     
     if 'mean' in intervention:
-        assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
-        per_position = 'positional' in intervention
-        means = compute_mean_activations(model, graph, intervention_dataloader, per_position=per_position)
-        means = means.unsqueeze(0)
-        if not per_position:
+        if means is None:
+            assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
+            per_position = 'positional' in intervention
+            means = compute_mean_activations(model, graph, intervention_dataloader, per_position=per_position)
             means = means.unsqueeze(0)
+            if not per_position:
+                means = means.unsqueeze(0)
 
     # This step cleans up the graph, removing components until it's fully connected
     graph.prune()

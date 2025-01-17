@@ -10,7 +10,7 @@ from tqdm import tqdm
 from einops import einsum
 
 from graph import Graph, InputNode, LogitNode, AttentionNode, MLPNode
-from attribute import tokenize_plus, compute_mean_activations
+from utils import tokenize_plus, compute_mean_activations
 
 
 def make_hooks_and_matrices(model: HookedTransformer, graph: Graph, batch_size:int , n_pos:int, scores: Optional[Tensor], neuron:bool=False):
