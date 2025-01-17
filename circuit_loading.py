@@ -63,7 +63,7 @@ def load_graph_from_pt(pt_path):
     d = torch.load(pt_path)
     required_keys = ['cfg', 'src_nodes', 'dst_nodes', 'edges_scores', 'edges_in_graph', 'nodes_in_graph']
     assert all([k in d.keys() for k in required_keys]), f"Bad torch circuit file format. Found keys - {d.keys()}, missing keys - {set(required_keys) - set(d.keys())}"
-    assert d['edges'].shape == d['edges_in_graph'].shape, "Bad edges array shape"
+    assert d['edges_scores'].shape == d['edges_in_graph'].shape, "Bad edges array shape"
     # assert d['edges'].shape == d['edges_in_graph'].shape == (len(d['src_nodes']), len(d['dst_nodes'])), "Bad edges array shape"
 
     g = Graph.from_model(d['cfg'])
