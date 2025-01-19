@@ -5,16 +5,23 @@ from transformer_lens import HookedTransformer
 
 from graph import Graph
 # %%
-path = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
+patpath = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
 task = 'ioi'
 ablation = 'cf'
-name = 'ugs_mib'
+model_str = "qwen"
+name = f'ugs_mib_{model_str}'
 # lamb = 0.001
 lambs = [0.01, 0.002, .001, .0005, .0002, .0001, 1e-5, 5e-6, 2e-6, 1e-6]
-lambs = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+lambs = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+
+if model_str == "gpt2-small":
+    model_name = "gpt2-small"
+elif model_str == "qwen":
+    model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+else:
+    raise Exception('Model name not defined')
 
 # load an empty graph to use as reference
-model_name = "gpt2-small"
 model = HookedTransformer.from_pretrained(model_name, device="mps")
 model.cfg.use_split_qkv_input = True
 model.cfg.use_attn_result = True
@@ -95,8 +102,8 @@ for lamb in lambs:
     curr_thetas_mlp = thetas['mlp-mlp'][layer_idx+1]
 
     for src_layer_idx in range(model.cfg.n_layers):
-        for src_head_idx in range(curr_thetas_attn.shape[0]):
-            edges[f'a{src_layer_idx}.h{src_head_idx}->logits'] = curr_thetas_attn[src_head_idx, src_layer_idx].item()
+        for src_head_idx in range(curr_thetas_attn.shape[1]):
+            edges[f'a{src_layer_idx}.h{src_head_idx}->logits'] = curr_thetas_attn[src_layer_idx, src_head_idx].item()
 
     for src_layer_idx in range(model.cfg.n_layers+1):
         if src_layer_idx == 0:
@@ -136,7 +143,6 @@ for lamb in lambs:
     dest_path = f'{res_folder}/graph.json'
     with open(dest_path, 'w') as f:
         json.dump(dict_to_store, f)
-
 
 # %%
 # extra: look into scores
