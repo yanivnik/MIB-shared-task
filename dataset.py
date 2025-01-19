@@ -58,7 +58,7 @@ class HFEAPDataset(Dataset):
 
         self.counterfactual_type = counterfactual_type
         if task == 'mcqa':
-            self.dataset = load_dataset(url, '2_answer_choices', split=split, token=hf_token)
+            self.dataset = load_dataset(url, '4_answer_choices', split=split, token=hf_token)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
         elif task == 'arc':
@@ -95,6 +95,9 @@ class HFEAPDataset(Dataset):
     
     def head(self, n: int):
         return [self.dataset[i] for i in range(n)]
+    
+    def tail(self, n: int):
+        return [self.dataset[i] for i in range(len(self.dataset)-n, len(self.dataset))]
 
     def filter_dataset(self):
         if self.task == 'ioi':
