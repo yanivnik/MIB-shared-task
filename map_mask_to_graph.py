@@ -5,7 +5,7 @@ from transformer_lens import HookedTransformer
 
 from graph import Graph
 # %%
-patpath = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
+path = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
 task = 'ioi'
 ablation = 'cf'
 model_str = "qwen"
