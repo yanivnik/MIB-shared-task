@@ -18,7 +18,7 @@ from metrics import get_metric
 from evaluate_graph import evaluate_graph, evaluate_baseline, evaluate_area_under_curve
 from huggingface_hub import hf_hub_download
 
-def run_circuit_discovery(task, model_name, ablation="patching", method="EAP-IG-inputs", nodes=False):
+def run_circuit_discovery(task, model_name, ablation="patching", method="EAP-IG-inputs", nodes=False, transformers_cache_dir=None):
     outdir = f"circuits/{task}_{model_name}_{method}_{ablation}"
     if nodes:
         outdir += "_node"
@@ -31,12 +31,13 @@ def run_circuit_discovery(task, model_name, ablation="patching", method="EAP-IG-
         ablation_path = None
 
     # load model
+    print(f'trs {transformers_cache_dir}')
     if model_name == "gpt2":
         model = HookedTransformer.from_pretrained("gpt2-small")
     elif model_name == "qwen2.5":
         model = HookedTransformer.from_pretrained("Qwen/Qwen2.5-0.5B", attn_implementation="eager", torch_dtype=torch.bfloat16)
     elif model_name == "llama3":
-        model = HookedTransformer.from_pretrained("meta-llama/Llama-3.1-8B", attn_implementation="eager", torch_dtype=torch.bfloat16)
+        model = HookedTransformer.from_pretrained("meta-llama/Llama-3.1-8B", attn_implementation="eager", torch_dtype=torch.bfloat16, cache_dir=transformers_cache_dir)
     else:
         model = HookedTransformer.from_pretrained("google/gemma-2-2b", attn_implementation="eager", torch_dtype=torch.bfloat16)
     model.cfg.use_split_qkv_input = True
@@ -94,7 +95,7 @@ def run_evaluation(task, model_name, split="train", ablation="patching", method=
     elif model_name == "qwen2.5":
         model = HookedTransformer.from_pretrained("Qwen/Qwen2.5-0.5B", attn_implementation="eager", torch_dtype=torch.bfloat16, cache_dir=transformers_cache_dir)
     elif model_name == "llama3":
-        model = HookedTransformer.from_pretrained("meta-llama/Meta-Llama-3-8B", attn_implementation="eager", torch_dtype=torch.bfloat16, cache_dir=transformers_cache_dir)
+        model = HookedTransformer.from_pretrained("meta-llama/Meta-Llama-3.1-8B", attn_implementation="eager", torch_dtype=torch.bfloat16, cache_dir=transformers_cache_dir)
     else:
         model = HookedTransformer.from_pretrained("google/gemma-2-2b", attn_implementation="eager", torch_dtype=torch.bfloat16, cache_dir=transformers_cache_dir)
     model.cfg.use_split_qkv_input = True
@@ -207,12 +208,12 @@ if __name__ == "__main__":
     
     def _run_discovery_and_eval(task, model, ablation, method, nodes=False):
         run_circuit_discovery(task, model, ablation=ablation, method=method,
-                              nodes=nodes)
+                              nodes=nodes, transformers_cache_dir=args.transformers_cache_dir)
         for split in ("train", "validation", "test"):
             print(f"evaluating at split {split}")
             run_evaluation(task, model, ablation=ablation, method=method, split=split,
                             use_accuracy=False, run_greedy=False, eval_random=False,
-                            nodes=nodes, transformers_chace_dir=args["transformers_cache_dir"])
+                            nodes=nodes, transformers_cache_dir=args.transformers_cache_dir)
 
     for model in ("llama3",):
         for task in ("ioi", "mcqa"):
