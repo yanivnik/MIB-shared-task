@@ -208,6 +208,8 @@ class HFEAPDataset(Dataset):
                 label = [int(year[:3]), int(year[3:])]
             elif 'gemma-2' in self.model_name or 'Qwen' in self.model_name:
                 label = [int(year[2]), int(year[3])]
+            else:
+                raise ValueError(f"Unrecognized model name: {self.model_name}")
             return row['clean'], row['corrupted'], label
 
     def to_dataloader(self, batch_size: int):

@@ -6,10 +6,106 @@ from torch.utils.data import DataLoader
 from torch import Tensor
 from transformer_lens import HookedTransformer
 from tqdm import tqdm
+from einops import einsum, rearrange
 
-from graph import Graph
+from graph import Graph, AttentionNode
 from utils import tokenize_plus, make_hooks_and_matrices, compute_mean_activations
 from evaluate_graph import evaluate_baseline, evaluate_graph
+
+def get_scores_exact_efficient(model: HookedTransformer, graph: Graph, dataloader:DataLoader, metric: Callable[[Tensor], Tensor], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None, quiet=False):
+    """Gets scores via exact patching, by repeatedly calling evaluate graph.
+
+    Args:
+        model (HookedTransformer): the model to attribute
+        graph (Graph): the graph to attribute
+        dataloader (DataLoader): the data over which to attribute
+        metric (Callable[[Tensor], Tensor]): the metric to attribute with respect to
+        intervention (Literal[&#39;patching&#39;, &#39;zero&#39;, &#39;mean&#39;,&#39;mean, optional): the intervention to use. Defaults to 'patching'.
+        intervention_dataloader (Optional[DataLoader], optional): the dataloader over which to take the mean. Defaults to None.
+        quiet (bool, optional): _description_. Defaults to False.
+    """
+
+    if model.cfg.use_normalization_before_and_after:
+        raise NotImplementedError("Efficient exact patching is not implemented for models with normalization before and after the attention layer")
+    
+    if graph.neurons_in_graph is not None:
+        raise NotImplementedError("Efficient exact patching is not implemented for graphs with neurons_in_graph")
+
+    def make_input_construction_hook(model: HookedTransformer, activation_differences, in_graph_vector, batch_slice=slice(None, None, None)):
+        def input_construction_hook(activations, hook):
+            # The ... here is to account for a potential head dimension, when constructing a whole attention layer's input
+            update = einsum(activation_differences[:, :, :len(in_graph_vector)], in_graph_vector,'batch pos previous hidden, previous ... -> batch pos ... hidden')
+            try:
+                activations[batch_slice] += update
+            except RuntimeError as e:
+                print(activations.size(), update.size(), batch_slice)
+                raise e
+            return activations
+        return input_construction_hook
+
+    # compute means or corrupted_activations if necessary
+    means = None
+    if 'mean' in intervention:
+        assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
+        per_position = 'positional' in intervention
+        means = compute_mean_activations(model, graph, intervention_dataloader, per_position=per_position)
+        if not per_position:
+            means = means.unsqueeze(0)
+
+    elif intervention == 'patching':
+        for clean, corrupted, label in dataloader:
+            clean_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, clean)
+            corrupted_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, corrupted)
+            (fwd_hooks_corrupted, fwd_hooks_clean, _), activation_difference = make_hooks_and_matrices(model, graph, len(corrupted), n_pos, None)
+            with torch.inference_mode(), model.hooks(fwd_hooks=fwd_hooks_corrupted):
+                _ = model(corrupted_tokens, attention_mask=attention_mask)
+
+            with torch.inference_mode(), model.hooks(fwd_hooks=fwd_hooks_clean):
+                _ = model(clean_tokens, attention_mask=attention_mask)
+
+    graph.in_graph |= graph.real_edge_mask  # All edges that are real are now in the graph
+    baseline = evaluate_baseline(model, dataloader, metric).mean().item()
+    n_edges_in_batch = 6
+    edge_list = list(graph.edges.values())
+    edge_batches = [edge_list[i:i+n_edges_in_batch] for i in range(0, len(edge_list), n_edges_in_batch)]
+    if not quiet:
+        edge_batches = tqdm(edge_batches)
+
+    #clean_tokens = clean_tokens.unsqueeze(0).expand(n_edges_in_batch, *clean_tokens.shape).reshape(-1, *clean_tokens.shape[1:])
+    #attention_mask = attention_mask.unsqueeze(0).expand(n_edges_in_batch, *attention_mask.shape).reshape(-1, *attention_mask.shape[1:])
+    clean_tokens = clean_tokens.repeat(n_edges_in_batch, 1)
+    attention_mask = attention_mask.repeat(n_edges_in_batch, 1)
+
+    for edge_batch in edge_batches:
+        input_construction_hooks = []
+        for i, edge in enumerate(edge_batch):
+            edge.in_graph = False
+            prev_index = graph.prev_index(edge.child)
+            bwd_index = graph.backward_index(edge.child, qkv=edge.qkv, attn_slice=True)
+            in_graph_vector = (1 - graph.in_graph[:prev_index, bwd_index].to(device=model.cfg.device, dtype=model.cfg.dtype))
+
+            # if isinstance(edge.child, AttentionNode):
+            #     in_graph_vector = torch.zeros((graph.n_forward, model.cfg.n_heads), device='cuda', dtype=model.cfg.dtype)
+            #     in_graph_vector[graph.forward_index(edge.parent), edge.child.head] = 1
+            # else:
+            #     in_graph_vector = torch.zeros((graph.n_forward), device='cuda', dtype=model.cfg.dtype)
+            #     in_graph_vector[graph.forward_index(edge.parent)] = 1
+
+            input_construction_hook = make_input_construction_hook(model, activation_difference, in_graph_vector, slice(i * dataloader.batch_size, (i+1) * dataloader.batch_size, 1))
+            input_construction_hooks.append((edge.hook, input_construction_hook))
+
+            edge.in_graph = True
+        
+        with torch.inference_mode(), model.hooks(input_construction_hooks):
+            logits = model(clean_tokens, attention_mask=attention_mask)
+
+        logits = rearrange(logits, '(idx batch) ... -> idx batch ...', idx=n_edges_in_batch)
+        for i, edge in enumerate(edge_batch):
+            intervened_performance = metric(logits[i], None, input_lengths, label)
+            edge.score = intervened_performance - baseline
+
+    # This is just to make the return type the same as all of the others; we've actually already updated the score matrix
+    return graph.scores
 
 def get_scores_exact(model: HookedTransformer, graph: Graph, dataloader:DataLoader, metric: Callable[[Tensor], Tensor], intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader: Optional[DataLoader]=None, quiet=False):
     """Gets scores via exact patching, by repeatedly calling evaluate graph.
@@ -24,8 +120,9 @@ def get_scores_exact(model: HookedTransformer, graph: Graph, dataloader:DataLoad
         quiet (bool, optional): _description_. Defaults to False.
     """
 
-    # compute means if necessary
+    # compute means or corrupted_activations if necessary
     means = None
+    corrupted_activations = None
     if 'mean' in intervention:
         assert intervention_dataloader is not None, "Intervention dataloader must be provided for mean interventions"
         per_position = 'positional' in intervention
@@ -34,13 +131,22 @@ def get_scores_exact(model: HookedTransformer, graph: Graph, dataloader:DataLoad
         if not per_position:
             means = means.unsqueeze(0)
 
+    elif intervention == 'patching':
+        corrupted_activations = []
+        for _, corrupted, _ in dataloader:
+            corrupted_tokens, attention_mask, input_lengths, n_pos = tokenize_plus(model, corrupted)
+            (fwd_hooks_corrupted, _, _), activation_difference = make_hooks_and_matrices(model, graph, len(corrupted), n_pos, None)
+            with torch.inference_mode(), model.hooks(fwd_hooks=fwd_hooks_corrupted):
+                _ = model(corrupted_tokens, attention_mask=attention_mask)
+            corrupted_activations.append(activation_difference)#.cpu())
+
     graph.in_graph |= graph.real_edge_mask  # All edges that are real are now in the graph
-    baseline = evaluate_baseline(model, graph, dataloader, metric, quiet=True).mean().item()
+    baseline = evaluate_baseline(model, dataloader, metric).mean().item()
     edges = graph.edges.values() if quiet else tqdm(graph.edges.values())
     for edge in edges:
         edge.in_graph = False
-        intervened_performance = evaluate_graph(model, graph, dataloader, metric, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=True, means=means).mean().item()
-        edge.score = baseline - intervened_performance
+        intervened_performance = evaluate_graph(model, graph, dataloader, metric, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=True, means=means, corrupted_activations=corrupted_activations).mean().item()
+        edge.score = intervened_performance - baseline
         edge.in_graph = True
 
     # This is just to make the return type the same as all of the others; we've actually already updated the score matrix
@@ -420,6 +526,8 @@ def attribute(model: HookedTransformer, graph: Graph, dataloader: DataLoader, me
         scores = get_scores_information_flow_routes(model, graph, dataloader, quiet=quiet)
     elif method == 'exact':
         scores = get_scores_exact(model, graph, dataloader, metric, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=quiet)
+    elif method == 'exact-efficient':
+        scores = get_scores_exact_efficient(model, graph, dataloader, metric, intervention=intervention, intervention_dataloader=intervention_dataloader, quiet=quiet)
     else:
         raise ValueError(f"integrated_gradients must be in ['EAP', 'EAP-IG-inputs', 'EAP-IG-activations'], but got {method}")
 

@@ -119,20 +119,20 @@ def js_div(p: torch.tensor, q: torch.tensor):
     return 0.5 * (kl_div(m, p.log(), log_target=True, reduction='none').mean(-1) + kl_div(m, q.log(), log_target=True, reduction='none').mean(-1))
 
 
-def divergence(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, divergence_type: Union[Literal['kl'], Literal['js']]='kl', mean=True, loss=True):
-    circuit_logits = get_logit_positions(circuit_logits, input_length)
-    clean_logits = get_logit_positions(clean_logits, input_length)
+# def divergence(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, divergence_type: Union[Literal['kl'], Literal['js']]='kl', mean=True, loss=True):
+#     circuit_logits = get_logit_positions(circuit_logits, input_length)
+#     clean_logits = get_logit_positions(clean_logits, input_length)
 
-    circuit_probs = torch.softmax(circuit_logits, dim=-1)
-    clean_probs = torch.softmax(clean_logits, dim=-1)
+#     circuit_probs = torch.softmax(circuit_logits, dim=-1)
+#     clean_probs = torch.softmax(clean_logits, dim=-1)
 
-    if divergence_type == 'kl':
-        results = kl_div(circuit_probs.log(), clean_probs.log(), log_target=True, reduction='none').mean(-1)
-    elif divergence_type == 'js':
-        results = js_div(circuit_probs, clean_probs)
-    else: 
-        raise ValueError(f"Expected divergence_type of 'kl' or 'js', but got '{divergence_type}'")
-    return results.mean() if mean else results
+#     if divergence_type == 'kl':
+#         results = kl_div(circuit_probs.log(), clean_probs.log(), log_target=True, reduction='none').mean(-1)
+#     elif divergence_type == 'js':
+#         results = js_div(circuit_probs, clean_probs)
+#     else: 
+#         raise ValueError(f"Expected divergence_type of 'kl' or 'js', but got '{divergence_type}'")
+#     return results.mean() if mean else results
 
 
 def logit_diff(circuit_logits: torch.Tensor, clean_logits: torch.Tensor, input_length: torch.Tensor, labels: torch.Tensor, mean=True, prob=False, loss=False):
