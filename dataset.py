@@ -47,6 +47,7 @@ class HFEAPDataset(Dataset):
     tokenizer: PreTrainedTokenizer
     control: bool
     model_name: Optional[str]
+    dataset: Dataset
 
     def __init__(self, url:str, tokenizer: PreTrainedTokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
                  control:Optional[bool]=False, counterfactual_type:Optional[str]=None,
@@ -94,7 +95,7 @@ class HFEAPDataset(Dataset):
         return self.dataset.shuffle()
     
     def head(self, n: int):
-        return [self.dataset[i] for i in range(n)]
+        self.dataset = self.dataset.select(range(n))
 
     def filter_dataset(self):
         if self.task == 'ioi':
