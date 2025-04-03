@@ -717,7 +717,8 @@ class Graph:
         layout: str="dot",
         seed: Optional[int] = None
     ) -> pgv.AGraph:
-        """Export the graph as a .png file
+        """
+        Export the graph as a .png file
         
         Filename: the filename to save the graph to
         Colorscheme: a cmap colorscheme
