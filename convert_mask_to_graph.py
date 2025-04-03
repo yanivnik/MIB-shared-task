@@ -2,17 +2,14 @@
 import json
 import torch
 from transformer_lens import HookedTransformer
-
 from graph import Graph
 # %%
-path = '/Users/alestolfo/workspace/optimal-ablations/results/pruning'
+path = '/path/to/ugs/outputs'
 task = 'ioi'
 ablation = 'cf'
-model_str = "qwen"
+model_str = "gpt2-small"
 name = f'ugs_mib_{model_str}'
-# lamb = 0.001
-lambs = [0.01, 0.002, .001, .0005, .0002, .0001, 1e-5, 5e-6, 2e-6, 1e-6]
-lambs = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+lambdas = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
 
 if model_str == "gpt2-small":
     model_name = "gpt2-small"
@@ -21,8 +18,8 @@ elif model_str == "qwen":
 else:
     raise Exception('Model name not defined')
 
-# load an empty graph to use as reference
-model = HookedTransformer.from_pretrained(model_name, device="mps")
+# load an empty graph to use as a reference
+model = HookedTransformer.from_pretrained(model_name)
 model.cfg.use_split_qkv_input = True
 model.cfg.use_attn_result = True
 model.cfg.use_hook_mlp_in = True
@@ -31,8 +28,7 @@ g = Graph.from_model(model)
 print(f'Loaded graph with {len(g.nodes)} nodes and {len(g.edges)} edges')
 print(f'Graph has {g.real_edge_mask.sum()} real edges')
 
-
-for lamb in lambs:
+for lamb in lambdas:
     res_folder = f'{path}/{task}/{ablation}/{name}/{lamb}'
     snapshot_path = f'{res_folder}/snapshot.pth'
 
@@ -53,7 +49,6 @@ for lamb in lambs:
         total_param_count += params.numel()
     print(f'Loaded {total_param_count} parameters')
 
-    
     # convert thetas to edge scores
     edges = {}
     for layer_idx in range(g.cfg['n_layers']):
@@ -76,7 +71,7 @@ for lamb in lambs:
                         src_str = 'input'
                     else:
                         src_str = f'm{src_layer_idx-1}'
-                    edges[f'{src_str}->a{layer_idx}.h{src_head_idx}<{letter}>'] = curr_thetas_mlp[src_head_idx, src_layer_idx].item() # not sure about this, why dim 1 is num_prev_layers + 1? beacuse mlp 0 is the input?
+                    edges[f'{src_str}->a{layer_idx}.h{src_head_idx}<{letter}>'] = curr_thetas_mlp[src_head_idx, src_layer_idx].item() 
 
         # curr_thetas_attn: num_prev_layers (= layer_idx) + 1 x n_heads
         curr_thetas_attn = thetas['attn-mlp'][layer_idx]
@@ -96,8 +91,6 @@ for lamb in lambs:
 
             edges[f'{src_str}->m{layer_idx}'] = curr_thetas_mlp[src_layer_idx].item()
 
-
-    # last mlp are the logits? check this
     curr_thetas_attn = thetas['attn-mlp'][layer_idx+1]
     curr_thetas_mlp = thetas['mlp-mlp'][layer_idx+1]
 
@@ -113,8 +106,7 @@ for lamb in lambs:
 
         edges[f'{src_str}->logits'] = curr_thetas_mlp[src_layer_idx].item()
 
-    print(f'Converted thetas to {len(edges)} edges')
-
+    print(f'Converted theta values to {len(edges)} edges')
 
     # check if there are missing edges
     missing = []
@@ -129,7 +121,6 @@ for lamb in lambs:
 
     print(f'Missing edges: {len(missing)}')
     print(f'Excess edges: {len(excess)}')
-
     
     # format and save graph
     edges_formatted = {k : { "score": v, "in_graph": False } for k, v in edges.items()}
@@ -144,14 +135,4 @@ for lamb in lambs:
     with open(dest_path, 'w') as f:
         json.dump(dict_to_store, f)
 
-# %%
-# extra: look into scores
-import plotly.express as px
-
-# make histogram of scores
-fig = px.histogram(x=list(edges.values()), nbins=500)
-
-fig.show()
-# %%
-{k:v for k,v in edges.items() if '->logits' in k}
 # %%
