@@ -8,7 +8,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 import numpy as np
 import pygraphviz as pgv
 
-# from visualization import get_color, generate_random_color
+from visualization import get_color, generate_random_color
 
 class Node:
     """
@@ -708,47 +708,47 @@ class Graph:
         torch.save(d, filename)
 
 
-    # def to_graphviz(
-    #     self,
-    #     filename:str,
-    #     colorscheme: str = "Pastel2",
-    #     minimum_penwidth: float = 0.6,
-    #     maximum_penwidth: float = 5.0,
-    #     layout: str="dot",
-    #     seed: Optional[int] = None
-    # ) -> pgv.AGraph:
-    #     """Export the graph as a .png file
+    def to_graphviz(
+        self,
+        filename:str,
+        colorscheme: str = "Pastel2",
+        minimum_penwidth: float = 0.6,
+        maximum_penwidth: float = 5.0,
+        layout: str="dot",
+        seed: Optional[int] = None
+    ) -> pgv.AGraph:
+        """Export the graph as a .png file
         
-    #     Filename: the filename to save the graph to
-    #     Colorscheme: a cmap colorscheme
-    #     """
-    #     g = pgv.AGraph(directed=True, bgcolor="white", overlap="false", splines="true", layout=layout)
+        Filename: the filename to save the graph to
+        Colorscheme: a cmap colorscheme
+        """
+        g = pgv.AGraph(directed=True, bgcolor="white", overlap="false", splines="true", layout=layout)
 
-    #     if seed is not None:
-    #         np.random.seed(seed)
+        if seed is not None:
+            np.random.seed(seed)
 
-    #     colors = {node.name: generate_random_color(colorscheme) for node in self.nodes.values()}
+        colors = {node.name: generate_random_color(colorscheme) for node in self.nodes.values()}
 
-    #     for node in self.nodes.values():
-    #         if node.in_graph:
-    #             g.add_node(node.name, 
-    #                     fillcolor=colors[node.name], 
-    #                     color="black", 
-    #                     style="filled, rounded",
-    #                     shape="box", 
-    #                     fontname="Helvetica",
-    #                     )
+        for node in self.nodes.values():
+            if node.in_graph:
+                g.add_node(node.name, 
+                        fillcolor=colors[node.name], 
+                        color="black", 
+                        style="filled, rounded",
+                        shape="box", 
+                        fontname="Helvetica",
+                        )
 
-    #     scores = self.scores.view(-1).abs()
-    #     max_score = scores.max().item()
-    #     min_score = scores.min().item()
-    #     for edge in self.edges.values():
-    #         if edge.in_graph:
-    #             normalized_score = (abs(edge.score) - min_score) / (max_score - min_score) if max_score != min_score else abs(edge.score)
-    #             penwidth = max(minimum_penwidth, normalized_score * maximum_penwidth)
-    #             g.add_edge(edge.parent.name,
-    #                     edge.child.name,
-    #                     penwidth=str(penwidth),
-    #                     color=get_color(edge.qkv, edge.score),
-    #                     )
-    #     g.draw(filename, prog="dot")
+        scores = self.scores.view(-1).abs()
+        max_score = scores.max().item()
+        min_score = scores.min().item()
+        for edge in self.edges.values():
+            if edge.in_graph:
+                normalized_score = (abs(edge.score) - min_score) / (max_score - min_score) if max_score != min_score else abs(edge.score)
+                penwidth = max(minimum_penwidth, normalized_score * maximum_penwidth)
+                g.add_edge(edge.parent.name,
+                        edge.child.name,
+                        penwidth=str(penwidth),
+                        color=get_color(edge.qkv, edge.score),
+                        )
+        g.draw(filename, prog="dot")
