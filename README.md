@@ -46,7 +46,7 @@ Here, we describe how to run the circuit discovery methods that we compare in th
 
 **Information Flow Routes.** Same as EAP, but replace `EAP` with `information-flow-routes`.
 
-**Uniform Gradient Sampling (UGS).** We provide a script for running UGS.
+**Uniform Gradient Sampling (UGS).** To obtain the UGS results, first run the [code from the original paper](https://github.com/maxtli/optimalablation) to train the continuous mask $\alpha$ over the model’s edges. Then, run the `convert_mask_to_graph.py` script to convert the learned mask into a graph object, where each edge is assigned a weight equal to its corresponding $\alpha$ value. These edge weights are then used to determine the subgraphs for evaluation.
 
 # Evaluation
 To evaluate these circuits, you can use the `run_evaluation.py` script. By default, this will evaluate on the validation set. To evaluate on the public test set, use `--split test`.
