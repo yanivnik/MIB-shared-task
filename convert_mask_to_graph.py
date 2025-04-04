@@ -119,8 +119,8 @@ for lamb in lambdas:
         if edge_name not in g.edges.keys():
             excess.append(edge_name)
 
-    print(f'Missing edges: {len(missing)}')
-    print(f'Excess edges: {len(excess)}')
+    assert len(missing) == 0, f'Missing edges: {missing}'
+    assert len(excess) == 0, f'Excess edges: {excess}'
     
     # format and save graph
     edges_formatted = {k : { "score": v, "in_graph": False } for k, v in edges.items()}
