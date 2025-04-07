@@ -59,6 +59,17 @@ We support the following attribution methods:
 
 - **Uniform Gradient Sampling (UGS).** We provide a script for running UGS, but this must be run separately.
 
+For example, to perform EAP-IG (inputs) with patching for IOI and MCQA on both Qwen-2.5 (0.5B) and Gemma-2 (2B) at the edge level, run:
+```
+python run_attribution.py
+--models Qwen/Qwen2.5-0.5B google/gemma-2-2b
+--tasks ioi mcqa
+--method eap-ig-inputs
+--level edge
+--ablation patching
+--batch-size 10
+```
+
 # Evaluation
 To evaluate these circuits, run
 ```run_evaluation.py
@@ -70,7 +81,7 @@ To evaluate these circuits, run
 --batch-size [BATCH_SIZE=20]
 --circuit-dir [CIRCUIT-DIR="circuits/"]
 ``` 
-By default, this will evaluate on the validation set. To evaluate on the public test set, use `--split test`.
+By default, this will evaluate on the validation set. To evaluate on the training or (public) test set, use `--split training` / `--split test`.
 
 The argument structure is the same as for the attribution script, so simply port the same arguments you used when running circuit discovery while changing the python script. This will load circuits from the locations they would have been saved in when running the circuit discovery method described above.
 

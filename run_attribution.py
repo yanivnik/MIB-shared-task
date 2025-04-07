@@ -10,6 +10,14 @@ from eap.attribute import attribute
 from eap.attribute_node import attribute_node
 from metrics import get_metric
 
+tasks_to_hf_names = {
+    'ioi': 'ioi',
+    'mcqa': 'mcqa',
+    'arithmetic': 'arithmetic_addition',
+    'arc': 'arc_easy',
+    'greater-than': 'greater_than'
+}
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", type='str', nargs='+', required=True)
@@ -26,7 +34,8 @@ if __name__ == "__main__":
         model = HookedTransformer.from_pretrained(model_name)
         for task in args.tasks:
             graph = Graph.from_model(model)
-            dataset = HFEAPDataset(task, model.tokenizer, split=args.split, task=task, model_name=model_name)
+            hf_task_name = f'mib-subgraph/{tasks_to_hf_names[task]}'
+            dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name)
             dataloader = dataset.to_dataloader(batch_size=args.batch_size)
             metric = get_metric('logit_diff', args.task, model.tokenizer, model)
             attribution_metric = partial(metric, mean=True, loss=True)

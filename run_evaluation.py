@@ -12,6 +12,7 @@ from dataset import HFEAPDataset
 from eap.graph import Graph
 from eap.evaluate import evaluate_graph, evaluate_baseline
 from metrics import get_metric
+from run_attribution import tasks_to_hf_names
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
                               level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None,
@@ -167,7 +168,6 @@ if __name__ == "__main__":
         model = HookedTransformer.from_pretrained(model_name)
         model_name_saveable = model_name.split('/')[-1]
         for task in args.tasks:
-
             p = f'{args.circuit_dir}/{model_name_saveable}_{task}_{args.method}_{args.ablation}_{args.level}.json'
 
             if args.circuit_files is not None:
@@ -181,7 +181,8 @@ if __name__ == "__main__":
             else:
                 raise ValueError(f"Invalid file extension: {p.suffix}")
             
-            dataset = HFEAPDataset(task, model.tokenizer, split=args.split, task=task, model_name=model_name)
+            hf_task_name = f'mib-subgraph/{tasks_to_hf_names[task]}'
+            dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name)
             dataloader = dataset.to_dataloader(batch_size=args.batch_size)
             metric = get_metric('logit_diff', args.task, model.tokenizer, model)
             attribution_metric = partial(metric, mean=False, loss=False)
@@ -196,7 +197,7 @@ if __name__ == "__main__":
                 "faithfulnesses": faithfulnesses
             }
             Path(args.output_dir).mkdir(exist_ok=True)
-            with open(args.output_dir / f"{model_name}_{task}_{args.ablation}.pkl", 'wb') as f:
+            with open(args.output_dir / f"{model_name}_{task}_{args.ablation}_{args.level}_{args.split}.pkl", 'wb') as f:
                 pickle.dump(d, f)
 
             
