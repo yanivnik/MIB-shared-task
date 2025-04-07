@@ -47,6 +47,7 @@ class HFEAPDataset(Dataset):
     tokenizer: PreTrainedTokenizer
     control: bool
     model_name: Optional[str]
+    dataset: Dataset
 
     def __init__(self, url:str, tokenizer: PreTrainedTokenizer, split:str="train", task:str='ioi', num_examples:Optional[int]=None,
                  control:Optional[bool]=False, counterfactual_type:Optional[str]=None,
@@ -94,7 +95,7 @@ class HFEAPDataset(Dataset):
         return self.dataset.shuffle()
     
     def head(self, n: int):
-        return [self.dataset[i] for i in range(n)]
+        self.dataset = self.dataset.select(range(n))
 
     def filter_dataset(self):
         if self.task == 'ioi':
@@ -208,6 +209,8 @@ class HFEAPDataset(Dataset):
                 label = [int(year[:3]), int(year[3:])]
             elif 'gemma-2' in self.model_name or 'Qwen' in self.model_name:
                 label = [int(year[2]), int(year[3])]
+            else:
+                raise ValueError(f"Unrecognized model name: {self.model_name}")
             return row['clean'], row['corrupted'], label
 
     def to_dataloader(self, batch_size: int):

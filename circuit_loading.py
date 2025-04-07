@@ -1,7 +1,7 @@
 import json
 import torch
 
-from graph import Graph
+from eap.graph import Graph
 
 
 def load_graph_from_json(json_path: str):
