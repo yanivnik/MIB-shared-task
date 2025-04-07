@@ -149,42 +149,54 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type='str', required=True)
-    parser.add_argument("--task", type='str', required=True)
+    parser.add_argument("--models", type='str', nargs='+', required=True)
+    parser.add_argument("--tasks", type='str', nargs='+', required=True)
     parser.add_argument("--circuit-path", type='str', required=True)
     parser.add_argument("--ablation", type='str', choices=['patching', 'zero', 'mean'], default='patching')
     parser.add_argument("--split", type='str', choices=['train', 'validation', 'test'], default='validation')
     parser.add_argument("--level", type='str', choices=['edge', 'node', 'neuron'], default='edge')
     parser.add_argument("--absolute", type='bool', default=True)
     parser.add_argument("--batch-size", type='int', default=20)
-    parser.add_argument("--output-dir", type='str', required=True)
+    parser.add_argument("--circuit-dir", type='str', default='circuits')
+    parser.add_argument("--circuit-files", type='str', nargs='+', default=None)
+    parser.add_argument("--output-dir", type='str', default='results')
     args = parser.parse_args()
 
-    model_name = args.model
-    model = HookedTransformer.from_pretrained(model_name)
-    task = args.task
-    p = Path(args.circuit_path)
-    if p.endswith('.json'):
-        graph = Graph.from_json(p)
-    elif p.endswith('.pt'):
-        graph = Graph.from_pt(p)
-    else:
-        raise ValueError(f"Invalid file extension: {p.suffix}")
-    
-    dataset = HFEAPDataset(task, model.tokenizer, split=args.split, task=task, model_name=model_name)
-    dataloader = dataset.to_dataloader(batch_size=args.batch_size)
-    metric = get_metric('logit_diff', args.task, model.tokenizer, model)
-    attribution_metric = partial(metric, mean=False, loss=False)
-    
-    weighted_edge_counts, area_under, area_from_100, average, faithfulnesses = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, log_scale=True, absolute=args.absolute, intervention=args.ablation)
+    i = 0
+    for model_name in args.models:
+        model = HookedTransformer.from_pretrained(model_name)
+        model_name_saveable = model_name.split('/')[-1]
+        for task in args.tasks:
 
-    d = {
-        "weighted_edge_counts": weighted_edge_counts,
-        "area_under": area_under,
-        "area_from_100": area_from_100,
-        "average": average,
-        "faithfulnesses": faithfulnesses
-    }
-    Path(args.output_dir).mkdir(exist_ok=True)
-    with open(args.output_dir / f"{model_name}_{task}_{args.ablation}.pkl", 'wb') as f:
-        pickle.dump(d, f)
+            p = f'{args.circuit_dir}/{model_name_saveable}_{task}_{args.method}_{args.ablation}_{args.level}.json'
+
+            if args.circuit_files is not None:
+                p = args.circuit_files[i]
+                i += 1
+
+            if p.endswith('.json'):
+                graph = Graph.from_json(p)
+            elif p.endswith('.pt'):
+                graph = Graph.from_pt(p)
+            else:
+                raise ValueError(f"Invalid file extension: {p.suffix}")
+            
+            dataset = HFEAPDataset(task, model.tokenizer, split=args.split, task=task, model_name=model_name)
+            dataloader = dataset.to_dataloader(batch_size=args.batch_size)
+            metric = get_metric('logit_diff', args.task, model.tokenizer, model)
+            attribution_metric = partial(metric, mean=False, loss=False)
+            
+            weighted_edge_counts, area_under, area_from_100, average, faithfulnesses = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, log_scale=True, absolute=args.absolute, intervention=args.ablation)
+
+            d = {
+                "weighted_edge_counts": weighted_edge_counts,
+                "area_under": area_under,
+                "area_from_100": area_from_100,
+                "average": average,
+                "faithfulnesses": faithfulnesses
+            }
+            Path(args.output_dir).mkdir(exist_ok=True)
+            with open(args.output_dir / f"{model_name}_{task}_{args.ablation}.pkl", 'wb') as f:
+                pickle.dump(d, f)
+
+            
