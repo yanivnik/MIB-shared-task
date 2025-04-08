@@ -21,7 +21,7 @@
 </p>
 
 # Dependencies
-You will need `transformer-lens >= 2.11.0` and its dependencies. Our code was tested using `torch == 2.4.1`.
+This code has no dependencies beyond those of `EAP-IG`, which should be pulled () and installed (`pip install EAP-IG`). EAP-IG will install its own dependencies, `transformer-lens >= 2.11.0` and `matplotlib`; if you wish to visualize the circuits you find, please use `pip install EAP-IG[viz]`, which will also install the necessary `pygraphviz` package. Our code was tested using `torch == 2.4.1`.
 
 # Circuit Discovery
 <p align="center">
@@ -30,30 +30,65 @@ You will need `transformer-lens >= 2.11.0` and its dependencies. Our code was te
     </a>
 </p>
 
-Here, we describe how to run the circuit discovery methods that we compare in the paper.
+Here, we describe how to run the circuit discovery methods that we compare in the paper. In general, you can run circuit discovery by running:
 
-**Edge Attribution Patching (EAP).** To run EAP, use the following command: `python run_attribution.py --models <model_list> --tasks <task_list> --methods EAP`, where `<model_list>` is a comma-separated list of models and `<task_list>` is a comma-separated list of task names. By default, this will run EAP with ablations from conterfactual inputs; to use mean ablations instead, use the `--ablations mean` argument.
+```
+python run_attribution.py
+--models [MODELS]
+--tasks [TASKS]
+--method [METHOD]
+--level [LEVEL='edge']
+--ablation [ABLATION="patching"]
+--batch-size [BATCH_SIZE=20]
+--circuit-dir [CIRCUIT-DIR="circuits/"]
+```
 
-**EAP with Optimal Ablations.** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py`. Then, run the following command: `python run_attribution.py --models <model_list> --tasks <task_list> --methods EAP --ablations optimal`.
+This will iterate over each model and task specified, producing an attribution graph file for each. The `ablation` option controls the ablation used - by default patching ablations, but `mean` and `zero` ablations are also possible. `level` is the level of granularity at which attribution is performed: `edge` (by default) or `node` / `neuron`. `batch-size` is the batch size used during attribution, and is set across models. `circuit-dir` is where circuit files are output, in the format 
 
-**Edge Attribution Patching with Integrated Gradients (EAP-IG).** Same as EAP, but replace `EAP` with `EAP-IG-inputs` or `EAP-IG-activations`. EAP-IG-inputs runs an interpolation between many values of the input embeddings, but allows the activations to flow freely through the rest of the model from there. EAP-IG-activations interpolates between intermediate activations at the component that is being attributed. We would recommend starting with EAP-IG-inputs, as it runs faster—and, in most cases, performs better.
+We support the following attribution methods: 
 
-**Activation Patching.** Same as EAP, but replace `EAP` with `exact`. This is the exact activation patching approach that EAP is approximating. Its runtime is long, so it is generally only feasible to run on smaller models unless you have a large enough GPU to increase the batch size significantly. Note that this approach operates at the level of edges, not nodes.
+- **Edge Attribution Patching (EAP; `eap`).** Note that by changing `--level` to `node` or `neuron`, you obtain node / neuron attribution patching.
 
-**Node Attributing Patching (NAP).** Same as EAP, but replace `EAP` with `NAP`. Instead of attributing the *connections between* submodules, this method attributes submodules or neurons themselves. By default, this operates at the neuron level, but you can attribute submodules if you prefer by using the argument `--level submodule`. 
+- **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py`. Then, run `python run_attribution.py` with `--method EAP --ablation optimal`.
 
-**Node Attributing Patching with Integrated Gradients (NAP-IG).** Same as NAP, but replace `NAP` with `NAP-IG-inputs` or `NAP-IG-activations`. 
+- **Edge Attribution Patching with Integrated Gradients (EAP-IG; `eap-ig-inputs` / `eap-ig-activations`).**  EAP-IG-inputs runs an interpolation between many values of the input embeddings, but allows the activations to flow freely through the rest of the model from there. EAP-IG-activations interpolates between intermediate activations at the component that is being attributed. We would recommend starting with EAP-IG-inputs, as it runs faster—and, in most cases, performs better.
 
-**Information Flow Routes.** Same as EAP, but replace `EAP` with `information-flow-routes`.
+- **Activation Patching (`exact`).** This is the exact activation patching approach that EAP is approximating. Its runtime is long, so it is generally only feasible to run on smaller models unless you have a large enough GPU to increase the batch size significantly. Note that this approach operates at the level of edges, not nodes.
 
-**Uniform Gradient Sampling (UGS).** To obtain the UGS results, first run the [code from the original paper](https://github.com/maxtli/optimalablation) to train the continuous mask $\alpha$ over the model’s edges. Then, run the `convert_mask_to_graph.py` script to convert the learned mask into a graph object, where each edge is assigned a weight equal to its corresponding $\alpha$ value. These edge weights are then used to determine the subgraphs for evaluation.
+
+- **Information Flow Routes (IFR; `information-flow-routes`).**
+
+- **Uniform Gradient Sampling (UGS).** To obtain the UGS results, first run the [code from the original paper](https://github.com/maxtli/optimalablation) to train the continuous mask $\alpha$ over the model’s edges. Then, run the `convert_mask_to_graph.py` script to convert the learned mask into a graph object, where each edge is assigned a weight equal to its corresponding $\alpha$ value. These edge weights are then used to determine the subgraphs for evaluation.
+
+For example, to perform EAP-IG (inputs) with patching for IOI and MCQA on both Qwen-2.5 (0.5B) and Gemma-2 (2B) at the edge level, run:
+```
+python run_attribution.py
+--models Qwen/Qwen2.5-0.5B google/gemma-2-2b
+--tasks ioi mcqa
+--method eap-ig-inputs
+--level edge
+--ablation patching
+--batch-size 10
+```
 
 # Evaluation
-To evaluate these circuits, you can use the `run_evaluation.py` script. By default, this will evaluate on the validation set. To evaluate on the public test set, use `--split test`.
+To evaluate these circuits, run
+```run_evaluation.py
+--models [MODELS]
+--tasks [TASKS]
+--split [SPLIT='validation']
+--level [LEVEL='edge']
+--ablation [ABLATION="patching"]
+--batch-size [BATCH_SIZE=20]
+--circuit-dir [CIRCUIT-DIR="circuits/"]
+``` 
+By default, this will evaluate on the validation set. To evaluate on the training or (public) test set, use `--split training` / `--split test`.
 
 The argument structure is the same as for the attribution script, so simply port the same arguments you used when running circuit discovery while changing the python script. This will load circuits from the locations they would have been saved in when running the circuit discovery method described above.
 
-If you are using custom circuits not obtained using this code, use the `--circuit_paths` argument. This takes a series of space-separated paths to circuits to be evaluated. These circuits must be provided in either .json or .pt format; see examples provided here. This will save your results in a .pkl file containing the faithfulness scores at all circuit sizes, the weighted edge counts of all circuits, and the CPR and CMD scores.
+If you are using custom circuits not obtained using this code, use the `--circuit-paths` argument. This takes a series of space-separated paths to circuits to be evaluated. These circuits must be provided in either .json or .pt format; see examples provided here. 
+
+This script will save your results in a .pkl file containing the faithfulness scores at all circuit sizes, the weighted edge counts of all circuits, and the CPR and CMD scores.
 
 # Submitting to the MIB Leaderboard
 If you would like to submit your circuits for evaluation on the private test set and upload to the leaderboard, please start by collecting your circuits. We expect one of two things for each task/model: either (1) a single .json or .pt file with floating-point importance scores assigned to each node or edge in the model, or (2) 10 .json or .pt files with binary membership variables assigned to each node or edge in the model. If (2), there should be one circuit containing between each of the following percentages of edges:
