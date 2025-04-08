@@ -1,13 +1,21 @@
-# %%
+from argparse import ArgumentParser
 import json
 import torch
 from transformer_lens import HookedTransformer
-from graph import Graph
-# %%
-path = '/path/to/ugs/outputs'
-task = 'ioi'
-ablation = 'cf'
-model_str = "gpt2-small"
+from eap.graph import Graph
+
+parser = ArgumentParser()
+parser.add_argument('--path', type=str, required=True, help='Path to the UGS outputs')
+parser.add_argument('--task', type=str, required=True, help='Task that UGS was run on')
+parser.add_argument('--ablation', type=str, required=True, help='Ablation that UGS was run with')
+parser.add_argument('--model', type=str, required=True, choices=['gpt2-small', 'qwen'], help='Model that UGS was run on')
+
+args = parser.parse_args()
+
+path = args.path
+task = args.task
+ablation = args.ablation
+model_str = args.model
 name = f'ugs_mib_{model_str}'
 lambdas = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
 
@@ -134,5 +142,3 @@ for lamb in lambdas:
     dest_path = f'{res_folder}/graph.json'
     with open(dest_path, 'w') as f:
         json.dump(dict_to_store, f)
-
-# %%
