@@ -95,8 +95,8 @@ class HFEAPDataset(Dataset):
         return self.dataset.shuffle()
     
     def head(self, n: int):
-        return [self.dataset[i] for i in range(n)]
-        #self.dataset = self.dataset.select(range(n))
+        #return [self.dataset[i] for i in range(n)]
+        self.dataset = self.dataset.select(range(n))
     
     def tail(self, n: int):
         return [self.dataset[i] for i in range(len(self.dataset)-n, len(self.dataset))]

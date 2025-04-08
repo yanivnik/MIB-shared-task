@@ -62,13 +62,13 @@ We support the following attribution methods:
 
 For example, to perform EAP-IG (inputs) with patching for IOI and MCQA on both Qwen-2.5 (0.5B) and Gemma-2 (2B) at the edge level, run:
 ```
-python run_attribution.py
---models Qwen/Qwen2.5-0.5B google/gemma-2-2b
---tasks ioi mcqa
---method eap-ig-inputs
---level edge
---ablation patching
---batch-size 10
+python run_attribution.py \
+--models Qwen/Qwen2.5-0.5B google/gemma-2-2b \
+--tasks ioi mcqa \
+--method EAP-IG-inputs \
+--level edge \
+--ablation patching \
+--batch-size 20
 ```
 
 # Evaluation
