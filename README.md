@@ -49,7 +49,7 @@ We support the following attribution methods:
 
 - **Edge Attribution Patching (EAP; `eap`).** Note that by changing `--level` to `node` or `neuron`, you obtain node / neuron attribution patching.
 
-- **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py`. Then, run `python run_attribution.py` with `--method EAP --ablation optimal`.
+- **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py`, which requires the `nnsight` package. Then, run `python run_attribution.py` with `--method EAP --ablation optimal`.
 
 - **Edge Attribution Patching with Integrated Gradients (EAP-IG; `eap-ig-inputs` / `eap-ig-activations`).**  EAP-IG-inputs runs an interpolation between many values of the input embeddings, but allows the activations to flow freely through the rest of the model from there. EAP-IG-activations interpolates between intermediate activations at the component that is being attributed. We would recommend starting with EAP-IG-inputs, as it runs faster—and, in most cases, performs better.
 
