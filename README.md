@@ -43,18 +43,17 @@ python run_attribution.py
 --circuit-dir [CIRCUIT-DIR="circuits/"]
 ```
 
-This will iterate over each model and task specified, producing an attribution graph file for each. The `ablation` option controls the ablation used - by default patching ablations, but `mean` and `zero` ablations are also possible. `level` is the level of granularity at which attribution is performed: `edge` (by default) or `node` / `neuron`. `batch-size` is the batch size used during attribution, and is set across models. `circuit-dir` is where circuit files are output, in the format 
+This will iterate over each model and task specified, producing an attribution graph file for each. The `ablation` option controls the ablation used - by default patching ablations, but `mean` and `zero` ablations are also possible for certain circuit-finding methods (`eap`, `eap-ig-activations`, and `exact`). `level` is the level of granularity at which attribution is performed: `edge` (by default) or `node` / `neuron`. `batch-size` is the batch size used during attribution, and is set across models. `circuit-dir` is where circuit files are output, in the format 
 
 We support the following attribution methods: 
 
 - **Edge Attribution Patching (EAP; `eap`).** Note that by changing `--level` to `node` or `neuron`, you obtain node / neuron attribution patching.
 
-- **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py`, which requires the `nnsight` package. Then, run `python run_attribution.py` with `--method EAP --ablation optimal`.
+- **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py --models model1,models --tasks task1,task2`, which requires the `nnsight` package. Then, run `python run_attribution.py` with `--method EAP --ablation optimal --optimal_ablation_path=[PATH_to_OA_outputs]`.
 
 - **Edge Attribution Patching with Integrated Gradients (EAP-IG; `eap-ig-inputs` / `eap-ig-activations`).**  EAP-IG-inputs runs an interpolation between many values of the input embeddings, but allows the activations to flow freely through the rest of the model from there. EAP-IG-activations interpolates between intermediate activations at the component that is being attributed. We would recommend starting with EAP-IG-inputs, as it runs faster—and, in most cases, performs better.
 
 - **Activation Patching (`exact`).** This is the exact activation patching approach that EAP is approximating. Its runtime is long, so it is generally only feasible to run on smaller models unless you have a large enough GPU to increase the batch size significantly. Note that this approach operates at the level of edges, not nodes.
-
 
 - **Information Flow Routes (IFR; `information-flow-routes`).**
 
