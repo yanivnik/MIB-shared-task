@@ -24,7 +24,8 @@ if __name__ == "__main__":
     parser.add_argument("--tasks", type=str, nargs='+', required=True)
     parser.add_argument("--method", type=str, required=True)
     parser.add_argument("--ig-steps", type=int, default=5)
-    parser.add_argument("--ablation", type=str, choices=['patching', 'zero', 'mean'], default='patching')
+    parser.add_argument("--ablation", type=str, choices=['patching', 'zero', 'mean', 'mean-positional', 'optimal'], default='patching')
+    parser.add_argument("--optimal_ablation_path", type=str, default=None)
     parser.add_argument("--level", type=str, choices=['node', 'neuron', 'edge'], default='edge')
     parser.add_argument("--split", type=str, choices=['train', 'validation', 'test'], default='train')
     parser.add_argument("--head", type=int, default=None)
@@ -52,9 +53,12 @@ if __name__ == "__main__":
             metric = get_metric('logit_diff', task, model.tokenizer, model)
             attribution_metric = partial(metric, mean=True, loss=True)
             if args.level == 'edge':
-                attribute(model, graph, dataloader, attribution_metric, args.method, args.ablation, ig_steps=args.ig_steps)
+                attribute(model, graph, dataloader, attribution_metric, args.method, args.ablation, 
+                          ig_steps=args.ig_steps, optimal_ablation_path=args.optimal_ablation_path)
             else:
-                attribute_node(model, graph, dataloader, attribution_metric, args.method, args.ablation, neuron=args.level == 'neuron', ig_steps=args.ig_steps)
+                attribute_node(model, graph, dataloader, attribution_metric, args.method, 
+                               args.ablation, neuron=args.level == 'neuron', ig_steps=args.ig_steps,
+                               optimal_ablation_path=args.optimal_ablation_path)
 
             # Save the graph
             model_name_saveable = model_name.split('/')[-1]

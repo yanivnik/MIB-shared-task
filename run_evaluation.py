@@ -15,8 +15,9 @@ from metrics import get_metric
 from run_attribution import tasks_to_hf_names
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
-                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None,
-                              no_normalize:Optional[bool]=False, apply_greedy:bool=False):
+                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, 
+                              intervention: Literal['patching', 'zero', 'mean','mean-positional']='patching', intervention_dataloader:DataLoader=None,
+                              optimal_ablation_path:Optional[str]=None, no_normalize:Optional[bool]=False, apply_greedy:bool=False):
     baseline_score = evaluate_baseline(model, dataloader, metrics).mean().item()
     graph.apply_topn(0, True)
     corrupted_score = evaluate_graph(model, graph, dataloader, metrics, quiet=quiet, intervention=intervention, intervention_dataloader=intervention_dataloader).mean().item()
@@ -152,7 +153,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", type=str, nargs='+', required=True)
     parser.add_argument("--tasks", type=str, nargs='+', required=True)
-    parser.add_argument("--ablation", type=str, choices=['patching', 'zero', 'mean'], default='patching')
+    parser.add_argument("--ablation", type=str, choices=['patching', 'zero', 'mean', 'mean-positional', 'optimal'], default='patching')
+    parser.add_argument("--optimal_ablation_path", type=str, default=None)
     parser.add_argument("--split", type=str, choices=['train', 'validation', 'test'], default='validation')
     parser.add_argument("--method", type=str, default=None, help="Method used to generate the circuit (only needed to infer circuit file name)")
     parser.add_argument("--level", type=str, choices=['edge', 'node', 'neuron'], default='edge')
@@ -199,7 +201,10 @@ if __name__ == "__main__":
             metric = get_metric('logit_diff', task, model.tokenizer, model)
             attribution_metric = partial(metric, mean=False, loss=False)
             
-            weighted_edge_counts, area_under, area_from_100, average, faithfulnesses = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, log_scale=True, absolute=args.absolute, intervention=args.ablation)
+            eval_auc_outputs = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, 
+                                                         log_scale=True, absolute=args.absolute, intervention=args.ablation,
+                                                         optimal_ablation_path=args.optimal_ablation_path)
+            weighted_edge_counts, area_under, area_from_100, average, faithfulnesses = eval_auc_outputs
 
             d = {
                 "weighted_edge_counts": weighted_edge_counts,
