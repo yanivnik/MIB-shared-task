@@ -10,12 +10,20 @@ from eap.attribute import attribute
 from eap.attribute_node import attribute_node
 from metrics import get_metric
 
-tasks_to_hf_names = {
+TASKS_TO_HF_NAMES = {
     'ioi': 'ioi',
     'mcqa': 'copycolors_mcqa',
-    'arithmetic': 'arithmetic_addition',
-    'arc': 'arc_easy',
-    'greater-than': 'greater_than'
+    'arithmetic_addition': 'arithmetic_addition',
+    'arithmetic_subtraction': 'arithmetic_subtraction',
+    'arc_easy': 'arc_easy',
+    'arc_challenge': 'arc_challenge',
+}
+
+MODEL_NAME_TO_FULLNAME = {
+    "gpt2": "gpt2-small",
+    "qwen2.5": "Qwen/Qwen2.5-0.5B",
+    "gemma2": "google/gemma-2-2b",
+    "llama3": "meta-llama/Llama-3.1-8B"
 }
 
 if __name__ == "__main__":
@@ -34,14 +42,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     for model_name in args.models:
-        model = HookedTransformer.from_pretrained(model_name)
+        model = HookedTransformer.from_pretrained(MODEL_NAME_TO_FULLNAME[model_name])
         model.cfg.use_split_qkv_input = True
         model.cfg.use_attn_result = True
         model.cfg.use_hook_mlp_in = True
         model.cfg.ungroup_grouped_query_attention = True
         for task in args.tasks:
             graph = Graph.from_model(model)
-            hf_task_name = f'mib-bench/{tasks_to_hf_names[task]}'
+            hf_task_name = f'mib-bench/{TASKS_TO_HF_NAMES[task]}'
             dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name)
             if args.head is not None:
                 head = args.head
@@ -61,9 +69,8 @@ if __name__ == "__main__":
                                optimal_ablation_path=args.optimal_ablation_path)
 
             # Save the graph
-            model_name_saveable = model_name.split('/')[-1]
-            method_name_saveable = f"{method}_{args.ablation}_{args.level}"
-            circuit_path = os.path.join(args.circuit_dir, method_name_saveable, f"{task}_{model_name_saveable}")
+            method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
+            circuit_path = os.path.join(args.circuit_dir, method_name_saveable, f"{task.replace('_', '-')}_{model_name}")
             os.makedirs(circuit_path, exist_ok=True)
             
             graph.to_pt(f'{circuit_path}/importances.pt')

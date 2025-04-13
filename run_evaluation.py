@@ -1,8 +1,10 @@
 import math 
+import os
+import pickle
+
 from typing import Literal, Optional
 from functools import partial
 from pathlib import Path
-import pickle
 
 import torch
 from torch.utils.data import DataLoader
@@ -12,7 +14,7 @@ from dataset import HFEAPDataset
 from eap.graph import Graph
 from eap.evaluate import evaluate_graph, evaluate_baseline
 from metrics import get_metric
-from run_attribution import tasks_to_hf_names
+from run_attribution import TASKS_TO_HF_NAMES, MODEL_NAME_TO_FULLNAME
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
                               level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, 
@@ -168,14 +170,14 @@ if __name__ == "__main__":
 
     i = 0
     for model_name in args.models:
-        model = HookedTransformer.from_pretrained(model_name)
+        model = HookedTransformer.from_pretrained(MODEL_NAME_TO_FULLNAME[model_name])
         model.cfg.use_split_qkv_input = True
         model.cfg.use_attn_result = True
         model.cfg.use_hook_mlp_in = True
         model.cfg.ungroup_grouped_query_attention = True
-        model_name_saveable = model_name.split('/')[-1]
         for task in args.tasks:
-            p = f'{args.circuit_dir}/{model_name_saveable}_{task}_{args.method}_{args.ablation}_{args.level}.json'
+            method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
+            p = f'{args.circuit_dir}/{method_name_saveable}/{task.replace('_', '-')}_{model_name}/importances.pt'
 
             if args.circuit_files is not None:
                 p = args.circuit_files[i]
@@ -189,7 +191,7 @@ if __name__ == "__main__":
             else:
                 raise ValueError(f"Invalid file extension: {p.suffix}")
             
-            hf_task_name = f'mib-bench/{tasks_to_hf_names[task]}'
+            hf_task_name = f'mib-bench/{TASKS_TO_HF_NAMES[task]}'
             dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name)
             if args.head is not None:
                 head = args.head
@@ -213,10 +215,7 @@ if __name__ == "__main__":
                 "average": average,
                 "faithfulnesses": faithfulnesses
             }
-            output_path = Path(args.output_dir)
-            output_path.mkdir(exist_ok=True, parents=True)
-            model_name_saveable = model_name.split('/')[-1]
-            method_name_saveable = f"{method}_{args.ablation}_{args.level}"
+            method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
             output_path = os.path.join(args.output_dir, method_name_saveable)
-            with open(f"{output_path}/{task}_{model_name_saveable}_{args.split}.pkl", 'wb') as f:
+            with open(f"{output_path}/{task}_{model_name}_{args.split}_abs-{args.absolute}.pkl", 'wb') as f:
                 pickle.dump(d, f)

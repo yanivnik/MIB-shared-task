@@ -37,7 +37,7 @@ python run_attribution.py
 --models [MODELS]
 --tasks [TASKS]
 --method [METHOD]
---level [LEVEL='edge']
+--level [LEVEL="edge"]
 --ablation [ABLATION="patching"]
 --batch-size [BATCH_SIZE=20]
 --circuit-dir [CIRCUIT-DIR="circuits/"]
@@ -47,7 +47,7 @@ This will iterate over each model and task specified, producing an attribution g
 
 We support the following attribution methods: 
 
-- **Edge Attribution Patching (EAP; `eap`).** Note that by changing `--level` to `node` or `neuron`, you obtain node / neuron attribution patching.
+- **Edge Attribution Patching (EAP; `eap`).** Note that by changing `--level` to `node` or `neuron`, you obtain node / neuron attribution patching. Node-level patching happens at the level of submodules (e.g., the MLP at layer 10, or attention head 5 at layer 3), whereas neuron-level patching assigns scores to each neuron in each of those submodules.
 
 - **EAP with Optimal Ablations** You will first need to compute the optimal ablations vector given a model and task. This can be done by running `oa.py --models model1,models --tasks task1,task2`, which requires the `nnsight` package. Then, run `python run_attribution.py` with `--method EAP --ablation optimal --optimal_ablation_path=[PATH_to_OA_outputs]`.
 
@@ -71,34 +71,56 @@ python run_attribution.py \
 ```
 
 # Evaluation
-To evaluate these circuits, run
-```run_evaluation.py
+To evaluate these circuits, run:
+```
+python run_evaluation.py
 --models [MODELS]
 --tasks [TASKS]
---split [SPLIT='validation']
---level [LEVEL='edge']
+--split [SPLIT="validation"]
+--level [LEVEL="edge"]
 --ablation [ABLATION="patching"]
 --batch-size [BATCH_SIZE=20]
 --circuit-dir [CIRCUIT-DIR="circuits/"]
+--output-dir [OUTPUT_DIR="results/"]
 ``` 
-By default, this will evaluate on the validation set. To evaluate on the training or (public) test set, use `--split training` / `--split test`.
+By default, this will evaluate on the validation set. To evaluate on the train or (public) test set, use `--split train` / `--split test`.
 
 The argument structure is the same as for the attribution script, so simply port the same arguments you used when running circuit discovery while changing the python script. This will load circuits from the locations they would have been saved in when running the circuit discovery method described above.
 
-If you are using custom circuits not obtained using this code, use the `--circuit-paths` argument. This takes a series of space-separated paths to circuits to be evaluated. These circuits must be provided in either .json or .pt format; see examples provided here. 
+If you are using custom circuits not obtained using this code, use the `--circuit-files` argument. This takes a series of space-separated paths to circuits to be evaluated. These circuits must be provided in either .json or .pt format; see examples provided here. 
 
-This script will save your results in a .pkl file containing the faithfulness scores at all circuit sizes, the weighted edge counts of all circuits, and the CPR and CMD scores.
+This script will save your results in .pkl files inside `--output-dir` containing the faithfulness scores at all circuit sizes, the weighted edge counts of all circuits, and the CPR and CMD scores.
+
+## Printing Results
+Once you've finished evaluation, run:
+```
+python print_results.py
+--output-dir [OUTPUT_DIR="results/"]
+--split [SPLIT="validation"]
+--metric [METRIC="cpr"]
+```
+This will output a table of scores for the specified split and metric. To display CMD scores instead, set `--metric cmd`.
 
 # Submitting to the MIB Leaderboard
-If you would like to submit your circuits for evaluation on the private test set and upload to the leaderboard, please start by collecting your circuits. We expect one of two things for each task/model: either (1) a single .json or .pt file with floating-point importance scores assigned to each node or edge in the model, or (2) 10 .json or .pt files with binary membership variables assigned to each node or edge in the model. If (2), there should be one circuit containing between each of the following percentages of edges:
+If you would like to submit your circuits for evaluation on the private test set, start by collecting your circuits. We expect one folder per task/model, whre each folder contains the name of the model and the task, separated by an underscore—for example, `ioi_gpt2`, or `arc-easy_llama3`.
+
+Each folder should contain either (1) a single .json or .pt file with floating-point importance scores assigned to each node or edge in the model, or (2) 9 .json or .pt files with binary membership variables assigned to each node or edge in the model. If (2), there should be one circuit containing no more than each of the following percentages of edges:
 
 ```{0, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50}```
 
-In other words, we expect one circuit with $0 < k \leq 0.1$ edges, one with $0.1 < k \leq 0.2$ edges, etc., where $k$ is the number of edges in the circuit as a percentage of edges in the full model.
+In other words, we expect one circuit with $k \leq 0.1$% of edges, one with $k \leq 0.2$% of edges, etc., where $k$ is the percentage of edges in the circuit compared to the full model.
 
-We require the circuits to be publicly available on HuggingFace. We will request a URL to a directory in a HuggingFace repository that contains one folder per task/model. Each folder should contain the name of the model and the name of the task separated with an underscore—for example, `ioi_gpt2`, or `arc-easy_llama3`. These folders should contain either your importance scores or your 10 circuits. We provide an example at TODO. You do not need to provide folders for all tasks/models; however, to prevent trivial submissions, we require you to provide circuits for $\geq$ 2 models, and $\geq$ 2 tasks.
+We require the circuits to be publicly available on HuggingFace. We will request a URL to a directory in a HuggingFace repository that contains one folder per task/model. These folders should contain either your importance scores or your 9 circuits. If you used our code, you'll already have this directory structure: simply upload the folder corresponding to the method name.
 
-Note that there is a rate limit of 2 submissions per user per week to prevent hill-climbing on the private test set. Our automatic submission checker will verify whether what you have provided is in a valid format, and *only* count your submission toward your limit if it is. In case of issues, we ask that you provide a contact email.
+## Example Circuits and Submissions
+
+We provide examples of valid submissions [in this repository](https://huggingface.co/mib-bench/mib-circuits-example/tree/main). See [here](https://huggingface.co/mib-bench/mib-circuits-example/tree/main/importances/pt) for an example of importance scores, and [here](https://huggingface.co/mib-bench/mib-circuits-example/tree/main/multiple_circuits/pt) for an example of multiple circuits. You do not need to provide folders for all tasks/models; however, to prevent trivial submissions, we require you to provide circuits for $\geq$ 2 models, and $\geq$ 2 tasks.
+
+We provide an example of an edge-level circuit in the importance-score format [here](circuits/ioi-eap-ig.json). If you choose to provide multiple circuits instead of importance scores, the circuit file format is nearly identical, but without the floating-point edge/node scores. We provide an example of a neuron-level node circuit [here](https://huggingface.co/mib-bench/mib-circuits-example/tree/main/node_examples).
+
+## Rate Limit
+
+There is a rate limit of 2 submissions per user per week to prevent hill-climbing on the private test set. Our automatic submission checker will verify whether what you have provided is in a valid format, and *only* count your submission toward your limit if it is. In case of issues, we ask that you provide a contact email.
 
 
 ## Citation
