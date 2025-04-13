@@ -1,6 +1,6 @@
 import argparse
+import os
 from functools import partial
-from pathlib import Path
 
 from transformer_lens import HookedTransformer
 
@@ -62,5 +62,8 @@ if __name__ == "__main__":
 
             # Save the graph
             model_name_saveable = model_name.split('/')[-1]
-            Path(args.circuit_dir).mkdir(exist_ok=True)
-            graph.to_json(f'{args.circuit_dir}/{model_name_saveable}_{task}_{args.method}_{args.ablation}_{args.level}.json')
+            method_name_saveable = f"{method}_{args.ablation}_{args.level}"
+            circuit_path = os.path.join(args.circuit_dir, method_name_saveable, f"{task}_{model_name_saveable}")
+            os.makedirs(circuit_path, exist_ok=True)
+            
+            graph.to_pt(f'{circuit_path}/importances.pt')

@@ -216,7 +216,7 @@ if __name__ == "__main__":
             output_path = Path(args.output_dir)
             output_path.mkdir(exist_ok=True, parents=True)
             model_name_saveable = model_name.split('/')[-1]
-            with open(output_path / f"{model_name_saveable}_{task}_{args.ablation}_{args.level}_{args.split}.pkl", 'wb') as f:
+            method_name_saveable = f"{method}_{args.ablation}_{args.level}"
+            output_path = os.path.join(args.output_dir, method_name_saveable)
+            with open(f"{output_path}/{task}_{model_name_saveable}_{args.split}.pkl", 'wb') as f:
                 pickle.dump(d, f)
-
-            
