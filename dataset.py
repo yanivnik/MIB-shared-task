@@ -62,16 +62,16 @@ class HFEAPDataset(Dataset):
             self.dataset = load_dataset(url, '4_answer_choices', split=split, token=hf_token)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
-        elif task == 'arc':
+        elif task.startswith('arc'):
             self.dataset = load_dataset(url, split=split, token=hf_token)
             if self.counterfactual_type is None:
                 self.counterfactual_type = "symbol_counterfactual"
         elif task == 'ewok':
             self.dataset = load_dataset(url, split="test")
             self.example_domain = "social-properties" if example_domain is None else example_domain
-        elif task == 'arithmetic':
+        elif task.startswith('arithmetic'):
             self.dataset = load_dataset(url, split=split, token=hf_token)
-            self.example_domain = "+" if example_domain is None else example_domain
+            self.example_domain = "-" if "subtraction" in task else example_domain if example_domain is not None else "+"
         elif task == 'greater-than':
             assert model_name is not None, "For greater-than you must specify the model name, but it is None"
             self.dataset = load_dataset(url, split=split, token=hf_token)
@@ -96,7 +96,11 @@ class HFEAPDataset(Dataset):
     
     def head(self, n: int):
         #return [self.dataset[i] for i in range(n)]
-        self.dataset = self.dataset.select(range(n))
+        if n <= len(self.dataset):
+            self.dataset = self.dataset.select(range(n))
+        else:
+            print("Warning: `num_examples` is greater than the size of the dataset! Returning the full dataset.")
+            return self.dataset
     
     def tail(self, n: int):
         return [self.dataset[i] for i in range(len(self.dataset)-n, len(self.dataset))]
@@ -122,7 +126,7 @@ class HFEAPDataset(Dataset):
                           len(self.tokenizer(x["Target2"], add_special_tokens=False).input_ids) and
                           x["Domain"] == self.example_domain
             )
-        elif self.task == 'arithmetic':
+        elif self.task.startswith('arithmetic'):
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(str(x["label"]), add_special_tokens=False).input_ids) == 1 and
                           x["random_counterfactual"] is not None and
@@ -134,7 +138,7 @@ class HFEAPDataset(Dataset):
                 lambda x: len(self.tokenizer(x["clean"], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(x["corrupted"], add_special_tokens=False).input_ids)
             )
-        elif self.task == 'arc':
+        elif self.task.startswith('arc'):
             filtered_dataset = self.dataset.filter(
                 lambda x: len(self.tokenizer(x["choices"]["label"][x["answerKey"]], add_special_tokens=False).input_ids) ==
                           len(self.tokenizer(str(x[self.counterfactual_type]["choices"]["label"][x[self.counterfactual_type]["answerKey"]]),
