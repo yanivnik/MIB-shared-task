@@ -135,11 +135,12 @@ There is a rate limit of 2 submissions per user per week to prevent hill-climbin
 If you use the resources in this repository, please cite our [paper](https://arxiv.org/abs/2504.13151):
 ```
 @article{mib-2025,
-    title = {{MIB}: A Mechanistic Interpretability Benchmark},
-    author = {Aaron Mueller and Atticus Geiger and Sarah Wiegreffe and Dana Arad and Iv{\'a}n Arcuschin and Adam Belfki and Yik Siu Chan and Jaden Fiotto-Kaufman and Tal Haklay and Michael Hanna and Jing Huang and Rohan Gupta and Yaniv Nikankin and Hadas Orgad and Nikhil Prakash and Anja Reusch and Aruna Sankaranarayanan and Shun Shao and Alessandro Stolfo and Martin Tutek and Amir Zur and David Bau and Yonatan Belinkov},
-    year = {2025},
-    note = {To appear},
-    journal = {arXiv preprint}
+	title = {{MIB}: A Mechanistic Interpretability Benchmark},
+	author = {Aaron Mueller and Atticus Geiger and Sarah Wiegreffe and Dana Arad and Iv{\'a}n Arcuschin and Adam Belfki and Yik Siu Chan and Jaden Fiotto-Kaufman and Tal Haklay and Michael Hanna and Jing Huang and Rohan Gupta and Yaniv Nikankin and Hadas Orgad and Nikhil Prakash and Anja Reusch and Aruna Sankaranarayanan and Shun Shao and Alessandro Stolfo and Martin Tutek and Amir Zur and David Bau and Yonatan Belinkov},
+	year = {2025},
+	journal = {CoRR},
+	volume = {arXiv:2504.13151},
+	url = {https://arxiv.org/abs/2504.13151v1}
 }
 ```
 
