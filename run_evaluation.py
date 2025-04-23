@@ -15,6 +15,7 @@ from eap.graph import Graph
 from eap.evaluate import evaluate_graph, evaluate_baseline
 from metrics import get_metric
 from run_attribution import TASKS_TO_HF_NAMES, MODEL_NAME_TO_FULLNAME
+from print_results import COL_MAPPING
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
                               level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, 
@@ -60,23 +61,23 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
         faithfulnesses.append(faithfulness)
     
     area_under = 0.
-    area_from_100 = 0.
+    area_from_1 = 0.
     for i in range(len(faithfulnesses) - 1):
         i_1, i_2 = i, i+1
-        x_1 = percentages[i_1]
-        x_2 = percentages[i_2]
+        x_1 = weighted_edge_counts[i_1]
+        x_2 = weighted_edge_counts[i_2]
         # area from point to 100
         if log_scale:
             x_1 = math.log(x_1)
             x_2 = math.log(x_2)
-        trapezoidal = (percentages[i_2] - percentages[i_1]) * \
+        trapezoidal = (x_2 - x_1) * \
                         (((abs(1. - faithfulnesses[i_1])) + (abs(1. - faithfulnesses[i_2]))) / 2)
-        area_from_100 += trapezoidal 
+        area_from_1 += trapezoidal 
         
-        trapezoidal = (percentages[i_2] - percentages[i_1]) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
+        trapezoidal = (x_2 - x_1) * ((faithfulnesses[i_1] + faithfulnesses[i_2]) / 2)
         area_under += trapezoidal
     average = sum(faithfulnesses) / len(faithfulnesses)
-    return weighted_edge_counts, area_under, area_from_100, average, faithfulnesses
+    return weighted_edge_counts, area_under, area_from_1, average, faithfulnesses
 
 
 def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):
@@ -176,8 +177,10 @@ if __name__ == "__main__":
         model.cfg.use_hook_mlp_in = True
         model.cfg.ungroup_grouped_query_attention = True
         for task in args.tasks:
+            if f"{task.replace('_', '-')}_{model_name}" not in COL_MAPPING:
+                continue
             method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
-            p = f'{args.circuit_dir}/{method_name_saveable}/{task.replace('_', '-')}_{model_name}/importances.pt'
+            p = f"{args.circuit_dir}/{method_name_saveable}/{task.replace('_', '-')}_{model_name}/importances.pt"
 
             if args.circuit_files is not None:
                 p = args.circuit_files[i]
@@ -206,16 +209,17 @@ if __name__ == "__main__":
             eval_auc_outputs = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, 
                                                          log_scale=True, absolute=args.absolute, intervention=args.ablation,
                                                          optimal_ablation_path=args.optimal_ablation_path)
-            weighted_edge_counts, area_under, area_from_100, average, faithfulnesses = eval_auc_outputs
+            weighted_edge_counts, area_under, area_from_1, average, faithfulnesses = eval_auc_outputs
 
             d = {
                 "weighted_edge_counts": weighted_edge_counts,
                 "area_under": area_under,
-                "area_from_100": area_from_100,
+                "area_from_1": area_from_1,
                 "average": average,
                 "faithfulnesses": faithfulnesses
             }
             method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
             output_path = os.path.join(args.output_dir, method_name_saveable)
+            os.makedirs(output_path, exist_ok=True)
             with open(f"{output_path}/{task}_{model_name}_{args.split}_abs-{args.absolute}.pkl", 'wb') as f:
                 pickle.dump(d, f)

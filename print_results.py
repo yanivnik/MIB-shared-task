@@ -6,7 +6,7 @@ from tabulate import tabulate
 
 """
 This script will print a table of the following form:
-Method      | IOI (GPT) | IOI (QWen) | IOI (Gemma) | IOI (Llama) | MCQA (QWen) | MCQA (Gemma) | MCQA (Llama) | Arithmetic (Llama) | ARC (Gemma) | ARC (Llama)
+Method      | IOI (GPT) | IOI (QWen) | IOI (Gemma) | IOI (Llama) | MCQA (QWen) | MCQA (Gemma) | MCQA (Llama) | Arithmetic (Llama) | ARC-E (Gemma) | ARC-E (Llama) | ARC-C (Llama)
 Random      |
 Method 1    |
 Method 2    |
@@ -22,14 +22,11 @@ COL_MAPPING = {
 }
 
 
-def area_under_curve(X, Y, log_transform=False):
+def area_under_curve(X, Y):
     print(X, Y)
     area_under = 0.
     for idx in range(len(X) - 1):
         x_1, x_2 = X[idx] / X[-1], X[idx+1] / X[-1]
-        if log_transform:
-            x_1 = math.log(x_1)
-            x_2 = math.log(x_2)
         trapezoidal = (x_2 - x_1) * ((Y[idx+1] + Y[idx]) / 2)
         area_under += trapezoidal
     return area_under
@@ -49,6 +46,8 @@ if __name__ == "__main__":
         method_path = os.path.join(args.output_dir, method_name)
         for results_file in os.listdir(method_path):
             task, model, split, abs = os.path.splitext(results_file)[0].split("_")
+            if f"{task}_{model}" not in COL_MAPPING:
+                continue
             if split != args.split:
                 continue
             
@@ -71,19 +70,18 @@ if __name__ == "__main__":
 
     table = []
     header = ["Method", "IOI (GPT)", "IOI (QWen)", "IOI (Gemma)", "IOI (Llama)", "MCQA (QWen)", "MCQA (Gemma)", "MCQA (Llama)",
-              "Arithmetic (Llama)", "ARC (Gemma)", "ARC (Llama)"]
+              "Arithmetic (Llama)", "ARC-E (Gemma)", "ARC-E (Llama)", "ARC-C (Llama)"]
     table.append(header)
 
     for method_name in scores:
         row = [method_name]
 
         if args.metric == 'cpr':
-            scorelist = [f"{s[1]:.2f}" if type(s) == dict else "-" for s in scores[method_name]]
+            scorelist = [f"{s['area_under']:.2f}" if type(s) == dict else "-" for s in scores[method_name]]
         else:
-            scorelist = [f"{s[2]:.2f}" if type(s) == dict else "-" for s in scores[method_name]]
+            scorelist = [f"{s['area_from_1']:.2f}" if type(s) == dict else "-" for s in scores[method_name]]
         row.extend(scorelist)
 
         table.append(row)
 
-
-print(tabulate(table))
+    print(tabulate(table))

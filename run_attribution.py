@@ -9,6 +9,7 @@ from eap.graph import Graph
 from eap.attribute import attribute
 from eap.attribute_node import attribute_node
 from metrics import get_metric
+from print_results import COL_MAPPING
 
 TASKS_TO_HF_NAMES = {
     'ioi': 'ioi',
@@ -38,6 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, choices=['train', 'validation', 'test'], default='train')
     parser.add_argument("--head", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--num-examples", type=int, default=100)
     parser.add_argument("--circuit-dir", type=str, default='circuits')
     args = parser.parse_args()
 
@@ -48,9 +50,11 @@ if __name__ == "__main__":
         model.cfg.use_hook_mlp_in = True
         model.cfg.ungroup_grouped_query_attention = True
         for task in args.tasks:
+            if f"{task.replace('_', '-')}_{model_name}" not in COL_MAPPING:
+                continue
             graph = Graph.from_model(model)
             hf_task_name = f'mib-bench/{TASKS_TO_HF_NAMES[task]}'
-            dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name)
+            dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name, num_examples=args.num_examples)
             if args.head is not None:
                 head = args.head
                 if len(dataset) < head:
