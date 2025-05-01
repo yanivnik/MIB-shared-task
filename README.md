@@ -22,13 +22,7 @@
 </p>
 
 # Dependencies
-This code has no dependencies beyond those of `EAP-IG`, which should be pulled and installed as follows:
-```
-git clone -b MIB https://github.com/hannamw/EAP-IG/
-cd EAP-IG
-pip install .
-cd ..
-```
+This code has no dependencies beyond those of `EAP-IG`, which is included as a submodule. You can pull submodules using `git submodule update --init --recursive`. Onc
 
 EAP-IG will install its own dependencies, `transformer-lens >= 2.11.0` and `matplotlib`; if you wish to visualize the circuits you find, please use `pip install EAP-IG[viz]`, which will also install the necessary `pygraphviz` package. Our code was tested using `torch == 2.4.1`.
 
