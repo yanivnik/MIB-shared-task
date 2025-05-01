@@ -81,7 +81,7 @@ class HFEAPDataset(Dataset):
         self.dataset = self.filter_dataset()
         #self.dataset = self.shuffle()
         if num_examples:
-            self.dataset = self.head(num_examples)
+            self.head(num_examples)
         
         # for when `control is True`
         self.answer_map = {}
@@ -95,12 +95,10 @@ class HFEAPDataset(Dataset):
         return self.dataset.shuffle()
     
     def head(self, n: int):
-        #return [self.dataset[i] for i in range(n)]
         if n <= len(self.dataset):
             self.dataset = self.dataset.select(range(n))
         else:
             print("Warning: `num_examples` is greater than the size of the dataset! Returning the full dataset.")
-            return self.dataset
     
     def tail(self, n: int):
         return [self.dataset[i] for i in range(len(self.dataset)-n, len(self.dataset))]
