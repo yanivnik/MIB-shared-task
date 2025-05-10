@@ -10,7 +10,7 @@ from eap.graph import Graph
 from eap.evaluate import evaluate_baseline, evaluate_graph
 
 def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader, metrics, quiet:bool=False, 
-                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=True, absolute:bool=True, 
+                              level:Literal['edge', 'node','neuron']='edge', log_scale:bool=False, absolute:bool=True, 
                               intervention: Literal['patching', 'zero', 'mean','mean-positional', 'optimal']='patching', 
                               intervention_dataloader:DataLoader=None, optimal_ablation_path:Optional[str]=None, 
                               no_normalize:Optional[bool]=False, apply_greedy:bool=False):
@@ -59,8 +59,8 @@ def evaluate_area_under_curve(model: HookedTransformer, graph: Graph, dataloader
     area_from_1 = 0.
     for i in range(len(faithfulnesses) - 1):
         i_1, i_2 = i, i+1
-        x_1 = weighted_edge_counts[i_1]
-        x_2 = weighted_edge_counts[i_2]
+        x_1 = percentages[i_1]
+        x_2 = percentages[i_2]
         # area from point to 100
         if log_scale:
             x_1 = math.log(x_1)

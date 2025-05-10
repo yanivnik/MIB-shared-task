@@ -66,7 +66,7 @@ for model_name in args.models:
         attribution_metric = partial(metric, mean=False, loss=False)
         
         eval_auc_outputs = evaluate_area_under_curve(model, graph, dataloader, attribution_metric, level=args.level, 
-                                                        log_scale=True, absolute=args.absolute, intervention=args.ablation,
+                                                        absolute=args.absolute, intervention=args.ablation,
                                                         optimal_ablation_path=args.optimal_ablation_path)
         weighted_edge_counts, area_under, area_from_1, average, faithfulnesses = eval_auc_outputs
 

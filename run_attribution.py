@@ -50,11 +50,13 @@ for model_name in args.models:
         attribution_metric = partial(metric, mean=True, loss=True)
         if args.level == 'edge':
             attribute(model, graph, dataloader, attribution_metric, args.method, args.ablation, 
-                        ig_steps=args.ig_steps, optimal_ablation_path=args.optimal_ablation_path)
+                        ig_steps=args.ig_steps, optimal_ablation_path=args.optimal_ablation_path,
+                        intervention_dataloader=dataloader)
         else:
             attribute_node(model, graph, dataloader, attribution_metric, args.method, 
                             args.ablation, neuron=args.level == 'neuron', ig_steps=args.ig_steps,
-                            optimal_ablation_path=args.optimal_ablation_path)
+                            optimal_ablation_path=args.optimal_ablation_path,
+                            intervention_dataloader=dataloader)
 
         # Save the graph
         method_name_saveable = f"{args.method}_{args.ablation}_{args.level}"
@@ -62,3 +64,4 @@ for model_name in args.models:
         os.makedirs(circuit_path, exist_ok=True)
         
         graph.to_pt(f'{circuit_path}/importances.pt')
+        # graph.to_json(f'{circuit_path}/importances.json')
