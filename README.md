@@ -24,6 +24,8 @@
 # Dependencies
 This code requires only `EAP-IG` and `tabulate`, which is included as a submodule. You can pull submodules using `git submodule update --init --recursive`. Once it is pulled, you can install dependencies by running `pip install .` in this directory. Note that if you wish to visualize the circuits you find, you may want to `pip install EAP-IG[viz]`, which will also install the necessary `pygraphviz` package. Installing this package can be challenging, which is why it has been excluded. Our code was tested using `torch == 2.4.1`.
 
+If you use the `oa.py` script, you will additionally need `nnsight`. We used `nnsight==0.2.15`.
+
 # Circuit Discovery
 <p align="center">
     <a>
@@ -100,7 +102,7 @@ python print_results.py
 --split [SPLIT="validation"]
 --metric [METRIC="cpr"]
 ```
-This will output a table of scores for the specified split and metric. To display CMD scores instead, set `--metric cmd`.
+This will output a table of scores for the specified split and metric. To display CMD scores instead, set `--metric cmd`. To display InterpBench scores (AUROC), use `--metric auroc`.
 
 # Submitting to the MIB Leaderboard
 If you would like to submit your circuits for evaluation on the private test set, start by collecting your circuits. We expect one folder per task/model, whre each folder contains the name of the model and the task, separated by an underscore—for example, `ioi_gpt2`, or `arc-easy_llama3`.
