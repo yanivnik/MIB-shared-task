@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Optional
 import os
 import pickle
 import argparse
-from dataset import HFEAPDataset
+from MIB_circuit_track.dataset import HFEAPDataset
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
@@ -16,8 +16,31 @@ from torch.optim import Adam
 from transformers import PreTrainedModel
 from torch.utils.data import DataLoader
 from torch.nn import CrossEntropyLoss
-from nnsight.models.UnifiedTransformer import UnifiedTransformer
+from MIB_circuit_track.UnifiedTransformer import UnifiedTransformer
 from huggingface_hub import hf_hub_download
+
+
+def load_interpbench_model():
+    hf_cfg = hf_hub_download("mib-bench/interpbench", filename="ll_model_cfg.pkl")
+    hf_model = hf_hub_download("mib-bench/interpbench", subfolder="ioi_all_splits", filename="ll_model_100_100_80.pth")
+
+    cfg_dict = pickle.load(open(hf_cfg, "rb"))
+    if isinstance(cfg_dict, dict):
+        cfg = HookedTransformerConfig.from_dict(cfg_dict)
+    else:
+        # Some cases in InterpBench have the config as a HookedTransformerConfig object instead of a dict
+        assert isinstance(cfg_dict, HookedTransformerConfig)
+        cfg = cfg_dict
+    cfg.device = "cuda"
+
+    # Small hack to enable evaluation mode in the IOI model, that has a different config during training
+    cfg.use_hook_mlp_in = True
+    cfg.use_attn_result = True
+    cfg.use_split_qkv_input = True
+
+    model = UnifiedTransformer(cfg, state_dict=torch.load(hf_model, map_location="cuda"), from_cfg=True)
+    return model
+
 
 class OptimalAblationFinder:
     def __init__(
@@ -322,30 +345,7 @@ class OptimalAblationFinder:
     def get_component_names(self) -> List[str]:
         """Return list of all target components."""
         return self.target_components
-    
-def load_interpbench_model():
-    hf_cfg = hf_hub_download("cybershiptrooper/InterpBench", subfolder="ioi", filename="ll_model_cfg.pkl")
-    # hf_model = hf_hub_download("cybershiptrooper/InterpBench", subfolder=task_name, filename="ll_model.pth")
-    it_model_path = "interpbench/ioi_all_splits/ll_model_100_100_80.pth"
 
-    cfg_dict = pickle.load(open(hf_cfg, "rb"))
-    if isinstance(cfg_dict, dict):
-        cfg = HookedTransformerConfig.from_dict(cfg_dict)
-    else:
-        # Some cases in InterpBench have the config as a HookedTransformerConfig object instead of a dict
-        assert isinstance(cfg_dict, HookedTransformerConfig)
-        cfg = cfg_dict
-    cfg.device = "cuda"
-
-    # Small hack to enable evaluation mode in the IOI model, that has a different config during training
-    cfg.use_hook_mlp_in = True
-    cfg.use_attn_result = True
-    cfg.use_split_qkv_input = True
-
-    # model = HookedTransformer(cfg)
-    model = UnifiedTransformer(cfg, state_dict=torch.load(it_model_path, map_location="cuda"))
-    # model.load_state_dict(torch.load(it_model_path, map_location="cuda"))
-    return model
 
 if __name__ == "__main__":
     
@@ -372,15 +372,15 @@ if __name__ == "__main__":
             if model_name == "gpt2":
                 model = UnifiedTransformer(model_name)
                 model_dtype = torch.float32
-            elif model_name == "qwen2.5":
-                model_dtype = torch.float32
-                model = UnifiedTransformer("Qwen/Qwen2.5-0.5B", attn_implementation="eager")
             elif model_name == "interpbench":
                 model = load_interpbench_model()
                 model_dtype = torch.float32
+            elif model_name == "qwen2.5":
+                model = UnifiedTransformer("Qwen/Qwen2.5-0.5B", attn_implementation="eager")
+                model_dtype = torch.bfloat16
             else:
                 model = UnifiedTransformer("google/gemma-2-2b", attn_implementation="eager")
-                model_dtype = torch.float32
+                model_dtype = torch.bfloat16
             model.cfg.use_split_qkv_input = True
             model.cfg.use_attn_result = True
             model.cfg.use_hook_mlp_in = True
@@ -431,7 +431,7 @@ if __name__ == "__main__":
                     return batch
 
             # Create dataloader
-            batch_size = 20 if model in ("gpt2", "qwen2.5", "interpbench") else 5 if model == "gemma2" else 5
+            batch_size = 20 if model in ("gpt2", "qwen2.5", "interpbench") else 5
             dataloader = DataLoader(
                 tokenized_dataset,
                 batch_size=batch_size,
