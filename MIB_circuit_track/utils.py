@@ -11,7 +11,7 @@ MODEL_NAME_TO_FULLNAME = {
     "gpt2": "gpt2-small",
     "qwen2.5": "Qwen/Qwen2.5-0.5B",
     "gemma2": "google/gemma-2-2b",
-    "llama3": "meta-llama/Llama-3.1-8B"
+    "llama3": "meta-llama/Llama-3.1-8B",
 }
 
 """
@@ -28,5 +28,6 @@ COL_MAPPING = {
     "mcqa_qwen2.5": 4, "mcqa_gemma2": 5, "mcqa_llama3": 6,
     "arithmetic-addition_llama3": 7, "arithmetic-subtraction_llama3": 8,
     "arc-easy_gemma2": 9, "arc-easy_llama3": 10,
-    "arc-challenge_llama3": 11
+    "arc-challenge_llama3": 11,
+    "ioi_interpbench": None,
 }

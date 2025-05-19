@@ -105,9 +105,11 @@ def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):
         elif not obj.in_graph and not hyp_objs[obj.name].in_graph:
             TN += 1
     
-    precision = TP / (TP + FP)
+    if TP + FP == 0:
+        precision = 0
+    else:
+        precision = TP / (TP + FP)
     recall = TP / (TP + FN)
-    # f1 = (2 * precision * recall) / (precision + recall)
     TP_rate = recall
     FP_rate = FP / (FP + TN)
 
@@ -116,7 +118,7 @@ def compare_graphs(reference: Graph, hypothesis: Graph, by_node: bool = False):
             "TP_rate": TP_rate,
             "FP_rate": FP_rate}
 
-def area_under_roc(reference: Graph, hypothesis: Graph, by_node: bool = False):
+def evaluate_area_under_roc(reference: Graph, hypothesis: Graph, by_node: bool = False):
     tpr_list = []
     fpr_list = []
     precision_list = []

@@ -176,7 +176,7 @@ class HFEAPDataset(Dataset):
                 incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
             return row["prompt"], row[counterfactual_col]["prompt"], [correct_idx, incorrect_idx]
         
-        elif self.task in ('mcqa', 'arc'):
+        elif self.task == 'mcqa' or self.task.startswith('arc'):
             clean_prompt = row["prompt"]
             correct_idx = self.tokenizer(row["choices"]["label"][row["answerKey"]], add_special_tokens=False).input_ids[0]
             # counterfactual_cols = [k for k in list(row.keys()) if "_counterfactual" in k]
@@ -189,7 +189,7 @@ class HFEAPDataset(Dataset):
                 incorrect_idx = _make_control_answer(incorrect_idx, offset=1)
             return clean_prompt, corrupted_prompt, [correct_idx, incorrect_idx]
 
-        elif self.task == 'arithmetic':
+        elif self.task.startswith('arithmetic'):
             clean_prompt = row["prompt"]
             corrupted_prompt = row["random_counterfactual"]["prompt"]
             correct_idx = self.tokenizer(str(row["label"]), add_special_tokens=False).input_ids[0]

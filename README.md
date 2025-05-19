@@ -46,7 +46,7 @@ python run_attribution.py
 --circuit-dir [CIRCUIT-DIR="circuits/"]
 ```
 
-This will iterate over each model and task specified, producing an attribution graph file for each. The `ablation` option controls the ablation used - by default patching ablations, but `mean` and `zero` ablations are also possible for certain circuit-finding methods (`eap`, `eap-ig-activations`, and `exact`). `level` is the level of granularity at which attribution is performed: `edge` (by default) or `node` / `neuron`. `batch-size` is the batch size used during attribution, and is set across models. `circuit-dir` is where circuit files are output, in the format 
+This will iterate over each model and task specified, producing an attribution graph file for each. Each entry of `MODELS` should be in `{interpbench, gpt2, qwen2.5, gemma2, llama3}`, and each entry of `TASKS` should be in `{ioi, mcqa, arithmetic_subtraction, arithmetic_addition, arc_easy, arc_challenge}`. The `ablation` option controls the ablation used - by default patching ablations, but `mean` and `zero` ablations are also possible for certain circuit-finding methods (`eap`, `eap-ig-activations`, and `exact`). `level` is the level of granularity at which attribution is performed: `edge` (by default) or `node` / `neuron`. `batch-size` is the batch size used during attribution, and is set across models. `circuit-dir` is where circuit files are output.
 
 We support the following attribution methods: 
 
@@ -65,7 +65,7 @@ We support the following attribution methods:
 For example, to perform EAP-IG (inputs) with patching for IOI and MCQA on both Qwen-2.5 (0.5B) and Gemma-2 (2B) at the edge level, run:
 ```
 python run_attribution.py \
---models Qwen/Qwen2.5-0.5B google/gemma-2-2b \
+--models qwen2.5 gemma2 \
 --tasks ioi mcqa \
 --method EAP-IG-inputs \
 --level edge \

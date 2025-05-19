@@ -45,7 +45,7 @@ if __name__ == "__main__":
     parser.add_argument("--method", type=str, required=True)
     parser.add_argument("--ig-steps", type=int, default=5)
     parser.add_argument("--ablation", type=str, choices=['patching', 'zero', 'mean', 'mean-positional', 'optimal'], default='patching')
-    parser.add_argument("--optimal_ablation_path", type=str, default=None)
+    parser.add_argument("--optimal-ablation-path", type=str, default=None)
     parser.add_argument("--level", type=str, choices=['node', 'neuron', 'edge'], default='edge')
     parser.add_argument("--split", type=str, choices=['train', 'validation', 'test'], default='train')
     parser.add_argument("--head", type=int, default=None)
@@ -73,7 +73,6 @@ if __name__ == "__main__":
             graph = Graph.from_model(model)
             hf_task_name = f'mib-bench/{TASKS_TO_HF_NAMES[task]}'
             dataset = HFEAPDataset(hf_task_name, model.tokenizer, split=args.split, task=task, model_name=model_name, num_examples=args.num_examples)
-            print(dataset[0])
             if args.head is not None:
                 head = args.head
                 if len(dataset) < head:
