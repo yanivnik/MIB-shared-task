@@ -60,7 +60,7 @@ We support the following attribution methods:
 
 - **Information Flow Routes (IFR; `information-flow-routes`).**
 
-- **Uniform Gradient Sampling (UGS).** To obtain the UGS results, first run the [code from the original paper](https://github.com/maxtli/optimalablation) to train the continuous mask $\alpha$ over the model’s edges. Then, run the `convert_mask_to_graph.py` script to convert the learned mask into a graph object, where each edge is assigned a weight equal to its corresponding $\alpha$ value. These edge weights are then used to determine the subgraphs for evaluation.
+- **Uniform Gradient Sampling (UGS).** To obtain the UGS results, first run [this script](https://github.com/alestolfo/optimalablation/blob/main/edge_pruning_unif_mib.py) with the `reg_lamb` hyperparameter set to 0.001. This will train the continuous mask $\alpha$ over the model’s edges. Then, run the `convert_mask_to_graph.py` script to convert the learned mask into a graph object, where each edge is assigned a weight equal to its corresponding $\alpha$ value. These edge weights are then used to determine the subgraphs for evaluation.
 
 For example, to perform EAP-IG (inputs) with patching for IOI and MCQA on both Qwen-2.5 (0.5B) and Gemma-2 (2B) at the edge level, run:
 ```
