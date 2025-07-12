@@ -756,7 +756,7 @@ class Graph:
         torch.save(d, filename)
 
 
-    def to_networkx(self):
+    def to_networkx(self, check_in_graph: bool = False):
         import networkx as nx
         G = nx.MultiDiGraph()
         ind_to_name = dict()
@@ -769,28 +769,31 @@ class Graph:
             ind_to_name[ind] = name
             name_to_ind[name] = ind
 
-            G.add_node(ind, **node.__dict__)
+            # G.add_node(ind, **node.__dict__)
+            G.add_node(name, **node.__dict__)
             for attr in ["parent_edges", "parents", "children", "child_edges"]:
-                del G.nodes[ind][attr]
+                # del G.nodes[ind][attr]
+                del G.nodes[name][attr]
 
         added_edges = {}
         for name, edge in self.edges.items():
             p = edge.parent
             c = edge.child
-            p_ind = name_to_ind[p.name]
-            c_ind = name_to_ind[c.name]
-            added_edges.setdefault((p_ind, c_ind), []).append(edge)
+            # p_ind = name_to_ind[p.name]
+            # c_ind = name_to_ind[c.name]
+            # added_edges.setdefault((p_ind, c_ind), []).append(edge)
+            added_edges.setdefault((p.name, c.name), []).append(edge)
 
         # Add edges
-        for (p_ind, c_ind), outgoing_edges in added_edges.items():
-            if len(outgoing_edges) == 1:
-                G.add_edge(p_ind, c_ind, **outgoing_edges[0].__dict__)
-            else:
+        for (p, c), outgoing_edges in added_edges.items():
+            for edge in outgoing_edges:
                 # There might be multiple edges going into attention heads (i.e. to q,k and v inputs)
-                for edge in outgoing_edges:
-                    G.add_edge(p_ind, c_ind, **edge.__dict__)
+                if check_in_graph and not edge.in_graph:
+                    continue
+                G.add_edge(p, c, **edge.__dict__)
 
-        assert len(G.nodes) == len(self.nodes) and len(G.edges) == len(self.edges), f"Networkx graph has {len(G.nodes)} nodes and {len(G.edges)} edges, but original graph had {orig_nodes} nodes and {orig_edges} edges"
+        if not check_in_graph:
+            assert len(G.nodes) == len(self.nodes) and len(G.edges) == len(self.edges), f"Networkx graph has {len(G.nodes)} nodes and {len(G.edges)} edges, but original graph had {orig_nodes} nodes and {orig_edges} edges"
         return G
 
 
