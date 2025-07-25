@@ -91,7 +91,14 @@ def plot_auc_results(
 
     # Save the plot to the output directory
     timestamp = results_data["evaluation_info"]["timestamp"]
-    plot_filename = f"{results_data['evaluation_info']['model']}_{results_data['evaluation_info']['task']}_{results_data['evaluation_info']['method']}_{results_data['evaluation_info']['relevant_metric']}_{timestamp}_plot.png"
+    model, task, method, metric, pnr = (
+        results_data["evaluation_info"]["model"],
+        results_data["evaluation_info"]["task"],
+        "+".join(sorted(results_data["evaluation_info"]["method"])),
+        results_data["evaluation_info"]["relevant_metric"],
+        results_data["evaluation_info"]["pnr"],
+    )
+    plot_filename = f"{model}_{task}_{method}_{metric}{f'_pnr{pnr}' if pnr >= 0 else ''}_{timestamp}_plot.png"
     plot_path = os.path.join(output_dir, "plots", plot_filename)
     os.makedirs(os.path.dirname(plot_path), exist_ok=True)
     plt.savefig(plot_path, dpi=300)

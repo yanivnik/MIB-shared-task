@@ -720,7 +720,7 @@ class Graph:
             return abs(s) if absolute else s
 
         candidate_edges = sorted(
-            [edge for edge in self.edges.values() if edge.child.in_graph],
+            [edge for edge in self.edges.values() if edge.child.in_graph and not edge.in_graph],
             key=lambda edge: abs_id(edge.score),
             reverse=True,
         )
