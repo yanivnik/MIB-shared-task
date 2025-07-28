@@ -1,5 +1,6 @@
 import argparse
 from datetime import datetime
+import itertools
 import logging
 import math
 import random
@@ -581,7 +582,7 @@ def evaluate_faithfulness_across_percentages(
             args.output_dir, "cache", attribution_cache_filename
         )
         if os.path.exists(attribution_cache_path):
-            edge_scores_history = torch.load(attribution_cache_path)[
+            edge_scores_history = torch.load(attribution_cache_path, weights_only=True)[
                 "edge_scores_history"
             ]
         else:
@@ -789,6 +790,12 @@ def parse_args():
         description="Evaluate smart graph building methods for circuit discovery"
     )
 
+    parser.add_argument(
+        "--iterate-over-args",
+        action="store_true",
+        default=False,
+    )
+
     # Model and task arguments
     parser.add_argument(
         "--model",
@@ -939,16 +946,8 @@ def parse_args():
     return args
 
 
-def main():
-    """
-    Main function to run the smart graph evaluation.
-    """
-    args = parse_args()
-
+def run_evaluation(args):
     set_deterministic(args.seed)
-
-    # Setup logging
-    setup_logging(args.log_level)
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -977,7 +976,7 @@ def main():
             logging.info(
                 f"Loading cached attribution scores from {attribution_cache_path}"
             )
-            cached_data = torch.load(attribution_cache_path)
+            cached_data = torch.load(attribution_cache_path, weights_only=True)
             g_edges = dict_to_graph(cached_data["g_edges"])
         else:
             # Perform attribution if no cache file exists
@@ -1051,7 +1050,7 @@ def main():
             }
 
             if not args.no_save_json:
-                file_name = f"{args.model}_{args.task}_{'+'.join(sorted(args.method))}_{args.metric}{f'_pnr{args.pnr}' if args.pnr >= 0 else ''}_auc_{auc_score:.4f}_dist_{dist_from_one:.4f}_{date_hour}.json"
+                file_name = f"{args.model}_{args.task}_{'+'.join(sorted(args.method))}_{args.metric}{f'_pnr{args.pnr}' if args.pnr >= 0 else ''}_seed{args.seed}.json"
                 file_path = os.path.join(args.output_dir, file_name)
                 logging.info(f"Saving JSON results to {file_path}")
                 with open(file_path, "w") as f:
@@ -1084,6 +1083,58 @@ def main():
     except Exception as e:
         logging.error(f"Error during evaluation: {e}")
         raise
+
+
+def main():
+    """
+    Main function to run the smart graph evaluation.
+    """
+    args = parse_args()
+    setup_logging(args.log_level)
+
+    if not args.iterate_over_args:
+        # Run single evaluation
+        run_evaluation(args)
+    else:
+        run_settings_file = f"/mnt/nlp/shared_projects/MIB-shared-task/logs/evaluation_run_settings_{args.model}_{args.task}.pt"
+        if os.path.exists(run_settings_file):
+            finished_run_settings = torch.load(run_settings_file, weights_only=True)
+        else:
+            finished_run_settings = []
+
+        for seed in [42, 43, 44]:
+            for metric in ["CMD", "CPR"]:
+                methods = ["ilp", "ratio", "bootstrapping"]
+                method_combos = [["greedy"]] + sum(
+                    [list(itertools.combinations(methods, i)) for i in range(1, 4)],
+                    [],
+                )[::-1]
+                for method_combo in method_combos:
+                    args.seed = seed
+                    args.metric = metric
+                    args.method = list(method_combo)
+                    pnrs = [0.6, 0.7, 0.8, 0.9] if "ratio" in method_combo else [-1.0]
+                    for pnr in pnrs:
+                        args.pnr = pnr
+                        run_settings = {
+                            "seed": seed,
+                            "metric": metric,
+                            "method_combo": method_combo,
+                            "pnr": pnr,
+                        }
+                        if run_settings in finished_run_settings:
+                            logging.info(
+                                f"Found existing results for {run_settings}, skipping..."
+                            )
+                            continue
+
+                        logging.info(
+                            "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX EVALUATING THE FOLLOWING SETTING: XXXXXXXXXXXXXXX"
+                        )
+                        logging.info(f"Run settings: {run_settings}")
+                        run_evaluation(args)
+                        finished_run_settings.append(run_settings)
+                        torch.save(finished_run_settings, run_settings_file)
 
 
 if __name__ == "__main__":
