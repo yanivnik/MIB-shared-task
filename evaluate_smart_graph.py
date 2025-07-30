@@ -931,8 +931,11 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    validate_args(args)
+    return args
 
-    # Validate arguments
+
+def validate_args(args):
     if "ratio" in args.method:
         if args.pnr is None or args.pnr < 0:
             raise ValueError(
@@ -942,8 +945,6 @@ def parse_args():
             raise ValueError(
                 "CPR metric is not compatible with 'ratio' method. When using CPR you want to use only positive scores."
             )
-
-    return args
 
 
 def run_evaluation(args):
@@ -1128,13 +1129,20 @@ def main():
                             )
                             continue
 
-                        logging.info(
-                            "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX EVALUATING THE FOLLOWING SETTING: XXXXXXXXXXXXXXX"
-                        )
-                        logging.info(f"Run settings: {run_settings}")
-                        run_evaluation(args)
-                        finished_run_settings.append(run_settings)
-                        torch.save(finished_run_settings, run_settings_file)
+                        try:
+                            logging.info(
+                                "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX EVALUATING THE FOLLOWING SETTING: XXXXXXXXXXXXXXX"
+                            )
+                            logging.info(f"Run settings: {run_settings}")
+                            validate_args(args)
+                            run_evaluation(args)
+                            finished_run_settings.append(run_settings)
+                            torch.save(finished_run_settings, run_settings_file)
+                        except Exception as e:
+                            logging.error(
+                                f"Error during evaluation with settings: {run_settings}. Error message: {e}"
+                            )
+                            continue
 
 
 if __name__ == "__main__":
